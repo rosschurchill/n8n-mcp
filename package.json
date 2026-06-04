@@ -182,6 +182,14 @@
   },
   "overrides": {
     "pyodide": "0.26.4",
-    "isolated-vm": "npm:empty-npm-package@1.0.0"
+    "isolated-vm": "npm:empty-npm-package@1.0.0",
+    "undici": "7.25.0",
+    "mysql2": "3.22.3",
+    "@ibm-cloud/watsonx-ai": "1.7.11",
+    "ibm-cloud-sdk-core": "5.4.13",
+    "@browserbasehq/sdk": "2.10.0",
+    "@playwright/test": "1.59.1",
+    "playwright": "1.59.1",
+    "playwright-core": "1.59.1"
   }
 }
