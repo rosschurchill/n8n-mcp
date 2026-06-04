@@ -1,5 +1,38 @@
 #!/usr/bin/env node
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -133,6 +166,15 @@ class SingleSessionHTTPServer {
     isValidSessionId(sessionId) {
         return Boolean(sessionId && sessionId.length > 0);
     }
+    isJsonRpcNotification(body) {
+        if (!body || typeof body !== 'object')
+            return false;
+        const isSingleNotification = (msg) => msg && typeof msg.method === 'string' && !('id' in msg);
+        if (Array.isArray(body)) {
+            return body.length > 0 && body.every(isSingleNotification);
+        }
+        return isSingleNotification(body);
+    }
     sanitizeErrorForClient(error) {
         const isProduction = process.env.NODE_ENV === 'production';
         if (error instanceof Error) {
@@ -154,6 +196,48 @@ class SingleSessionHTTPServer {
             };
         }
         return { message: 'An error occurred', code: 'UNKNOWN_ERROR' };
+    }
+    authenticateRequest(req, res) {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+            logger_1.logger.warn('Authentication failed: Missing Authorization header', {
+                ip: req.ip,
+                reason: 'no_auth_header'
+            });
+            res.status(401).json({
+                jsonrpc: '2.0',
+                error: { code: -32001, message: 'Unauthorized' },
+                id: null
+            });
+            return false;
+        }
+        if (!authHeader.startsWith('Bearer ')) {
+            logger_1.logger.warn('Authentication failed: Invalid format', {
+                ip: req.ip,
+                reason: 'invalid_auth_format'
+            });
+            res.status(401).json({
+                jsonrpc: '2.0',
+                error: { code: -32001, message: 'Unauthorized' },
+                id: null
+            });
+            return false;
+        }
+        const token = authHeader.slice(7).trim();
+        const isValidToken = this.authToken && auth_1.AuthManager.timingSafeCompare(token, this.authToken);
+        if (!isValidToken) {
+            logger_1.logger.warn('Authentication failed: Invalid token', {
+                ip: req.ip,
+                reason: 'invalid_token'
+            });
+            res.status(401).json({
+                jsonrpc: '2.0',
+                error: { code: -32001, message: 'Unauthorized' },
+                id: null
+            });
+            return false;
+        }
+        return true;
     }
     updateSessionAccess(sessionId) {
         if (this.sessionMetadata[sessionId]) {
@@ -263,15 +347,11 @@ class SingleSessionHTTPServer {
             try {
                 const sessionId = req.headers['mcp-session-id'];
                 const isInitialize = req.body ? (0, types_js_1.isInitializeRequest)(req.body) : false;
-                logger_1.logger.info('handleRequest: Processing MCP request - SDK PATTERN', {
+                logger_1.logger.debug('handleRequest: Processing MCP request', {
                     requestId: req.get('x-request-id') || 'unknown',
                     sessionId: sessionId,
-                    method: req.method,
-                    url: req.url,
-                    bodyType: typeof req.body,
-                    bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined',
-                    existingTransports: Object.keys(this.transports),
-                    isInitializeRequest: isInitialize
+                    isInitializeRequest: isInitialize,
+                    activeSessions: Object.keys(this.transports).length
                 });
                 let transport;
                 if (isInitialize) {
@@ -381,6 +461,20 @@ class SingleSessionHTTPServer {
                     }
                     logger_1.logger.info('handleRequest: Reusing existing transport for session', { sessionId });
                     transport = this.transports[sessionId];
+                    if (!transport) {
+                        if (this.isJsonRpcNotification(req.body)) {
+                            logger_1.logger.info('handleRequest: Session removed during lookup, accepting notification', { sessionId });
+                            res.status(202).end();
+                            return;
+                        }
+                        logger_1.logger.warn('handleRequest: Session removed between check and use (TOCTOU)', { sessionId });
+                        res.status(400).json({
+                            jsonrpc: '2.0',
+                            error: { code: -32000, message: 'Bad Request: Session not found or expired' },
+                            id: req.body?.id || null,
+                        });
+                        return;
+                    }
                     const isMultiTenantEnabled = process.env.ENABLE_MULTI_TENANT === 'true';
                     const sessionStrategy = process.env.MULTI_TENANT_SESSION_STRATEGY || 'instance';
                     if (isMultiTenantEnabled && sessionStrategy === 'shared' && instanceContext) {
@@ -389,6 +483,14 @@ class SingleSessionHTTPServer {
                     this.updateSessionAccess(sessionId);
                 }
                 else {
+                    if (this.isJsonRpcNotification(req.body)) {
+                        logger_1.logger.info('handleRequest: Accepting notification for stale/missing session', {
+                            method: req.body?.method,
+                            sessionId: sessionId || 'none',
+                        });
+                        res.status(202).end();
+                        return;
+                    }
                     const errorDetails = {
                         hasSessionId: !!sessionId,
                         isInitialize: isInitialize,
@@ -518,17 +620,20 @@ class SingleSessionHTTPServer {
             res.setHeader('X-Frame-Options', 'DENY');
             res.setHeader('X-XSS-Protection', '1; mode=block');
             res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+            res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
             next();
         });
         app.use((req, res, next) => {
-            const allowedOrigin = process.env.CORS_ORIGIN || '*';
-            res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-            res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
-            res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
-            res.setHeader('Access-Control-Max-Age', '86400');
+            const allowedOrigin = process.env.CORS_ORIGIN;
+            if (allowedOrigin) {
+                res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+                res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
+                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
+                res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+                res.setHeader('Access-Control-Max-Age', '86400');
+            }
             if (req.method === 'OPTIONS') {
-                res.sendStatus(204);
+                res.sendStatus(allowedOrigin ? 204 : 403);
                 return;
             }
             next();
@@ -543,7 +648,7 @@ class SingleSessionHTTPServer {
         });
         app.get('/', (req, res) => {
             const port = parseInt(process.env.PORT || '3000');
-            const host = process.env.HOST || '0.0.0.0';
+            const host = process.env.HOST || '127.0.0.1';
             const baseUrl = (0, url_detector_1.detectBaseUrl)(req, host, port);
             const endpoints = (0, url_detector_1.formatEndpointUrls)(baseUrl);
             res.json({
@@ -571,33 +676,16 @@ class SingleSessionHTTPServer {
             });
         });
         app.get('/health', (req, res) => {
-            const activeTransports = Object.keys(this.transports);
-            const activeServers = Object.keys(this.servers);
             const sessionMetrics = this.getSessionMetrics();
-            const isProduction = process.env.NODE_ENV === 'production';
-            const isDefaultToken = this.authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh';
             res.json({
                 status: 'ok',
-                mode: 'sdk-pattern-transports',
+                mode: 'single-session',
                 version: version_1.PROJECT_VERSION,
-                environment: process.env.NODE_ENV || 'development',
                 uptime: Math.floor(process.uptime()),
                 sessions: {
                     active: sessionMetrics.activeSessions,
-                    total: sessionMetrics.totalSessions,
-                    expired: sessionMetrics.expiredSessions,
                     max: MAX_SESSIONS,
-                    usage: `${sessionMetrics.activeSessions}/${MAX_SESSIONS}`,
-                    sessionIds: activeTransports
                 },
-                security: {
-                    production: isProduction,
-                    defaultToken: isDefaultToken,
-                    tokenLength: this.authToken?.length || 0
-                },
-                activeTransports: activeTransports.length,
-                activeServers: activeServers.length,
-                legacySessionActive: !!this.session,
                 memory: {
                     used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
                     total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
@@ -606,38 +694,11 @@ class SingleSessionHTTPServer {
                 timestamp: new Date().toISOString()
             });
         });
-        app.post('/mcp/test', jsonParser, async (req, res) => {
-            logger_1.logger.info('TEST ENDPOINT: Manual test request received', {
-                method: req.method,
-                headers: req.headers,
-                body: req.body,
-                bodyType: typeof req.body,
-                bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined'
-            });
-            const negotiationResult = (0, protocol_version_1.negotiateProtocolVersion)(undefined, undefined, req.get('user-agent'), req.headers);
-            (0, protocol_version_1.logProtocolNegotiation)(negotiationResult, logger_1.logger, 'TEST_ENDPOINT');
-            const testResponse = {
-                jsonrpc: '2.0',
-                id: req.body?.id || 1,
-                result: {
-                    protocolVersion: negotiationResult.version,
-                    capabilities: {
-                        tools: {}
-                    },
-                    serverInfo: {
-                        name: 'n8n-mcp',
-                        version: version_1.PROJECT_VERSION
-                    }
-                }
-            };
-            logger_1.logger.info('TEST ENDPOINT: Sending test response', {
-                response: testResponse
-            });
-            res.json(testResponse);
-        });
         app.get('/mcp', async (req, res) => {
             const sessionId = req.headers['mcp-session-id'];
             if (sessionId && this.transports[sessionId]) {
+                if (!this.authenticateRequest(req, res))
+                    return;
                 try {
                     await this.transports[sessionId].handleRequest(req, res, undefined);
                     return;
@@ -648,6 +709,8 @@ class SingleSessionHTTPServer {
             }
             const accept = req.headers.accept;
             if (accept && accept.includes('text/event-stream')) {
+                if (!this.authenticateRequest(req, res))
+                    return;
                 logger_1.logger.info('SSE stream request received - establishing SSE connection');
                 try {
                     await this.resetSessionSSE(res);
@@ -708,6 +771,8 @@ class SingleSessionHTTPServer {
             });
         });
         app.delete('/mcp', async (req, res) => {
+            if (!this.authenticateRequest(req, res))
+                return;
             const mcpSessionId = req.headers['mcp-session-id'];
             if (!mcpSessionId) {
                 res.status(400).json({
@@ -790,20 +855,13 @@ class SingleSessionHTTPServer {
             }
         });
         app.post('/mcp', authLimiter, jsonParser, async (req, res) => {
-            logger_1.logger.info('POST /mcp request received - DETAILED DEBUG', {
-                headers: req.headers,
-                readable: req.readable,
-                readableEnded: req.readableEnded,
-                complete: req.complete,
-                bodyType: typeof req.body,
-                bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined',
+            logger_1.logger.debug('POST /mcp request received', {
                 contentLength: req.get('content-length'),
                 contentType: req.get('content-type'),
                 userAgent: req.get('user-agent'),
                 ip: req.ip,
-                method: req.method,
-                url: req.url,
-                originalUrl: req.originalUrl
+                hasAuth: !!req.headers.authorization,
+                hasSessionId: !!req.headers['mcp-session-id']
             });
             const sessionId = req.headers['mcp-session-id'];
             if (typeof req.on === 'function') {
@@ -828,65 +886,14 @@ class SingleSessionHTTPServer {
                     req.removeListener('close', closeHandler);
                 });
             }
-            const authHeader = req.headers.authorization;
-            if (!authHeader) {
-                logger_1.logger.warn('Authentication failed: Missing Authorization header', {
-                    ip: req.ip,
-                    userAgent: req.get('user-agent'),
-                    reason: 'no_auth_header'
-                });
-                res.status(401).json({
-                    jsonrpc: '2.0',
-                    error: {
-                        code: -32001,
-                        message: 'Unauthorized'
-                    },
-                    id: null
-                });
+            if (!this.authenticateRequest(req, res))
                 return;
-            }
-            if (!authHeader.startsWith('Bearer ')) {
-                logger_1.logger.warn('Authentication failed: Invalid Authorization header format (expected Bearer token)', {
-                    ip: req.ip,
-                    userAgent: req.get('user-agent'),
-                    reason: 'invalid_auth_format',
-                    headerPrefix: authHeader.substring(0, Math.min(authHeader.length, 10)) + '...'
-                });
-                res.status(401).json({
-                    jsonrpc: '2.0',
-                    error: {
-                        code: -32001,
-                        message: 'Unauthorized'
-                    },
-                    id: null
-                });
-                return;
-            }
-            const token = authHeader.slice(7).trim();
-            const isValidToken = this.authToken &&
-                auth_1.AuthManager.timingSafeCompare(token, this.authToken);
-            if (!isValidToken) {
-                logger_1.logger.warn('Authentication failed: Invalid token', {
-                    ip: req.ip,
-                    userAgent: req.get('user-agent'),
-                    reason: 'invalid_token'
-                });
-                res.status(401).json({
-                    jsonrpc: '2.0',
-                    error: {
-                        code: -32001,
-                        message: 'Unauthorized'
-                    },
-                    id: null
-                });
-                return;
-            }
             logger_1.logger.info('Authentication successful - proceeding to handleRequest', {
                 hasSession: !!this.session,
                 sessionType: this.session?.isSSE ? 'SSE' : 'StreamableHTTP',
                 sessionInitialized: this.session?.initialized
             });
-            const instanceContext = (() => {
+            const instanceContext = await (async () => {
                 const headers = extractMultiTenantHeaders(req);
                 const hasUrl = headers['x-n8n-url'];
                 const hasKey = headers['x-n8n-key'];
@@ -912,6 +919,17 @@ class SingleSessionHTTPServer {
                         hasKey: !!hasKey
                     });
                     return undefined;
+                }
+                if (context.n8nApiUrl) {
+                    const { SSRFProtection } = await Promise.resolve().then(() => __importStar(require('./utils/ssrf-protection')));
+                    const ssrfResult = await SSRFProtection.validateWebhookUrl(context.n8nApiUrl);
+                    if (!ssrfResult.valid) {
+                        logger_1.logger.warn('SSRF: Blocked n8n API URL from headers', {
+                            reason: ssrfResult.reason,
+                            instanceId: context.instanceId
+                        });
+                        return undefined;
+                    }
                 }
                 return context;
             })();
@@ -952,7 +970,7 @@ class SingleSessionHTTPServer {
             }
         });
         const port = parseInt(process.env.PORT || '3000');
-        const host = process.env.HOST || '0.0.0.0';
+        const host = process.env.HOST || '127.0.0.1';
         this.expressServer = app.listen(port, host, () => {
             const isProduction = process.env.NODE_ENV === 'production';
             const isDefaultToken = this.authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh';
@@ -1116,7 +1134,7 @@ class SingleSessionHTTPServer {
         logSecurityEvent('session_export', { count: sessions.length });
         return sessions;
     }
-    restoreSessionState(sessions) {
+    async restoreSessionState(sessions) {
         let restoredCount = 0;
         for (const sessionState of sessions) {
             try {
@@ -1157,6 +1175,18 @@ class SingleSessionHTTPServer {
                         reason
                     });
                     continue;
+                }
+                if (sessionState.context.n8nApiUrl) {
+                    const { SSRFProtection } = await Promise.resolve().then(() => __importStar(require('./utils/ssrf-protection')));
+                    const ssrfResult = await SSRFProtection.validateWebhookUrl(sessionState.context.n8nApiUrl);
+                    if (!ssrfResult.valid) {
+                        logger_1.logger.warn(`Skipping session ${sessionState.sessionId} - SSRF blocked: ${ssrfResult.reason}`);
+                        logSecurityEvent('session_restore_failed', {
+                            sessionId: sessionState.sessionId,
+                            reason: `SSRF: ${ssrfResult.reason}`
+                        });
+                        continue;
+                    }
                 }
                 this.sessionMetadata[sessionState.sessionId] = {
                     createdAt,

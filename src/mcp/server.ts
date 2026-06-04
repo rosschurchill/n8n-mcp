@@ -157,6 +157,7 @@ export class N8NDocumentationMCPServer {
   private useSharedDatabase: boolean = false;  // Track if using shared DB for cleanup
   private sharedDbState: SharedDatabaseState | null = null;  // Reference to shared DB state for release
   private isShutdown: boolean = false;  // Prevent double-shutdown
+  private ftsAvailable: boolean | null = null;
 
   constructor(instanceContext?: InstanceContext, earlyLogger?: EarlyErrorLogger) {
     this.instanceContext = instanceContext;
@@ -650,7 +651,7 @@ export class N8NDocumentationMCPServer {
       // Log validation tools' input schemas for debugging
       const validationTools = tools.filter(t => t.name.startsWith('validate_'));
       validationTools.forEach(tool => {
-        logger.info('Validation tool schema', {
+        logger.debug('Validation tool schema', {
           toolName: tool.name,
           inputSchema: JSON.stringify(tool.inputSchema, null, 2),
           hasOutputSchema: !!tool.outputSchema,
@@ -666,15 +667,12 @@ export class N8NDocumentationMCPServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       
-      // Enhanced logging for debugging tool calls
-      logger.info('Tool call received - DETAILED DEBUG', {
-        toolName: name,
+      // Log structural metadata at INFO; full payload at DEBUG only
+      logger.info(`Tool call: ${name}`, {
+        argKeys: Object.keys(args || {}),
+      });
+      logger.debug('Tool call details', {
         arguments: JSON.stringify(args, null, 2),
-        argumentsType: typeof args,
-        argumentsKeys: args ? Object.keys(args) : [],
-        hasNodeType: args && 'nodeType' in args,
-        hasConfig: args && 'config' in args,
-        configType: args && args.config ? typeof args.config : 'N/A',
         rawRequest: JSON.stringify(request.params)
       });
 
@@ -1030,6 +1028,7 @@ export class N8NDocumentationMCPServer {
           : { valid: false, errors: [{ field: 'action', message: 'action is required' }] };
         break;
       case 'n8n_manage_datatable':
+      case 'n8n_manage_credentials':
         validationResult = args.action
           ? { valid: true, errors: [] }
           : { valid: false, errors: [{ field: 'action', message: 'action is required' }] };
@@ -1280,11 +1279,13 @@ export class N8NDocumentationMCPServer {
       throw new Error(`Tool '${name}' is disabled via DISABLED_TOOLS environment variable`);
     }
 
-    // Log the tool call for debugging n8n issues
+    // Log structural metadata at INFO; full args at DEBUG only
     logger.info(`Tool execution: ${name}`, {
+      argsKeys: typeof args === 'object' && args !== null ? Object.keys(args) : 'not-object'
+    });
+    logger.debug(`Tool execution details: ${name}`, {
       args: typeof args === 'object' ? JSON.stringify(args) : args,
-      argsType: typeof args,
-      argsKeys: typeof args === 'object' ? Object.keys(args) : 'not-object'
+      argsType: typeof args
     });
 
     // Validate that args is actually an object
@@ -1461,6 +1462,11 @@ export class N8NDocumentationMCPServer {
         await this.ensureInitialized();
         if (!this.repository) throw new Error('Repository not initialized');
         return n8nHandlers.handleAutofixWorkflow(args, this.repository, this.instanceContext);
+      case 'n8n_batch_operations':
+        this.validateToolParams(name, args, ['action']);
+        await this.ensureInitialized();
+        if (!this.repository) throw new Error('Repository not initialized');
+        return n8nHandlers.handleBatchOperations(args, this.repository, this.instanceContext);
       case 'n8n_test_workflow':
         this.validateToolParams(name, args, ['workflowId']);
         return n8nHandlers.handleTestWorkflow(args, this.instanceContext);
@@ -1480,8 +1486,10 @@ export class N8NDocumentationMCPServer {
               throw new Error('id is required for action=delete');
             }
             return n8nHandlers.handleDeleteExecution(args, this.instanceContext);
+          case 'logs':
+            return n8nHandlers.handleExecutionLogs(args, this.instanceContext);
           default:
-            throw new Error(`Unknown action: ${execAction}. Valid actions: get, list, delete`);
+            throw new Error(`Unknown action: ${execAction}. Valid actions: get, list, delete, logs`);
         }
       }
       case 'n8n_health_check':
@@ -1518,6 +1526,18 @@ export class N8NDocumentationMCPServer {
           case 'deleteRows':   return n8nHandlers.handleDeleteRows(args, this.instanceContext);
           default:
             throw new Error(`Unknown action: ${dtAction}. Valid actions: createTable, listTables, getTable, updateTable, deleteTable, getRows, insertRows, updateRows, upsertRows, deleteRows`);
+        }
+      }
+
+      case 'n8n_manage_credentials': {
+        this.validateToolParams(name, args, ['action']);
+        const credAction = args.action;
+        switch (credAction) {
+          case 'list':   return n8nHandlers.handleListCredentials(args, this.instanceContext);
+          case 'get':    return n8nHandlers.handleGetCredential(args, this.instanceContext);
+          case 'delete': return n8nHandlers.handleDeleteCredential(args, this.instanceContext);
+          default:
+            throw new Error(`Unknown credential action: ${credAction}. Use: list, get, delete`);
         }
       }
 
@@ -1659,6 +1679,22 @@ export class N8NDocumentationMCPServer {
   }
 
   /**
+   * Cached check for FTS5 table availability.
+   * Avoids a sqlite_master query on every search call.
+   */
+  private hasFTS5(): boolean {
+    if (this.ftsAvailable !== null) return this.ftsAvailable;
+    try {
+      this.ftsAvailable = !!this.db!.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'"
+      ).get();
+    } catch {
+      this.ftsAvailable = false;
+    }
+    return this.ftsAvailable;
+  }
+
+  /**
    * Primary search method used by ALL MCP search tools.
    *
    * This method automatically detects and uses FTS5 full-text search when available
@@ -1692,13 +1728,8 @@ export class N8NDocumentationMCPServer {
     
     const searchMode = options?.mode || 'OR';
     
-    // Check if FTS5 table exists
-    const ftsExists = this.db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name='nodes_fts'
-    `).get();
-    
-    if (ftsExists) {
+    // Check if FTS5 table exists (cached after first call)
+    if (this.hasFTS5()) {
       // Use FTS5 search with normalized query
       logger.debug(`Using FTS5 search with includeExamples=${options?.includeExamples}`);
       return this.searchNodesFTS(normalizedQuery, limit, searchMode, options);
@@ -1925,11 +1956,14 @@ export class N8NDocumentationMCPServer {
       return { query, results: [], totalCount: 0, mode: 'FUZZY' };
     }
     
-    // For fuzzy search, get ALL nodes to ensure we don't miss potential matches
-    // We'll limit results after scoring
+    // Pre-filter with LIKE to avoid scoring the entire table, then limit
+    const queryLower = query.toLowerCase();
+    const likeParam = `%${queryLower}%`;
     const candidateNodes = this.db!.prepare(`
-      SELECT * FROM nodes
-    `).all() as NodeRow[];
+      SELECT * FROM nodes WHERE
+        LOWER(display_name) LIKE ? OR LOWER(node_type) LIKE ? OR LOWER(description) LIKE ?
+      LIMIT 500
+    `).all(likeParam, likeParam, likeParam) as NodeRow[];
     
     // Calculate fuzzy scores for candidate nodes
     const scoredNodes = candidateNodes.map(node => {
@@ -2934,8 +2968,8 @@ Full documentation is being prepared. For now, use get_node_essentials for confi
       hasVersionHistory: versions.length > 0
     };
 
-    // Cache for 24 hours (86400000 ms)
-    this.cache.set(cacheKey, summary, 86400000);
+    // Cache for 24 hours (86400 seconds)
+    this.cache.set(cacheKey, summary, 86400);
 
     return summary;
   }

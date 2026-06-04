@@ -17,7 +17,7 @@ export class Logger {
   private useFileLogging = false;
   private fileStream: any = null;
   // Cache environment variables for performance
-  private readonly isStdio = process.env.MCP_MODE === 'stdio';
+  private readonly isStdio = process.env.MCP_MODE !== 'http';
   private readonly isDisabled = process.env.DISABLE_CONSOLE_OUTPUT === 'true';
   private readonly isHttp = process.env.MCP_MODE === 'http';
   private readonly isTest = process.env.NODE_ENV === 'test' || process.env.TEST_ENVIRONMENT === 'true';

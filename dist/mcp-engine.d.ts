@@ -28,7 +28,7 @@ export declare class N8NMCPEngine {
         age?: number;
     };
     exportSessionState(): SessionState[];
-    restoreSessionState(sessions: SessionState[]): number;
+    restoreSessionState(sessions: SessionState[]): Promise<number>;
     shutdown(): Promise<void>;
     start(): Promise<void>;
 }

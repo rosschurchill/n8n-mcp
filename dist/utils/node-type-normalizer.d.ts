@@ -5,6 +5,7 @@ export interface NodeTypeNormalizationResult {
     package: 'base' | 'langchain' | 'community' | 'unknown';
 }
 export declare class NodeTypeNormalizer {
+    static normalizeToShortForm(type: string): string;
     static normalizeToFullForm(type: string): string;
     static normalizeWithDetails(type: string): NodeTypeNormalizationResult;
     private static detectPackage;

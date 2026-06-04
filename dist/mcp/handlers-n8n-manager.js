@@ -51,6 +51,7 @@ exports.handleTestWorkflow = handleTestWorkflow;
 exports.handleGetExecution = handleGetExecution;
 exports.handleListExecutions = handleListExecutions;
 exports.handleDeleteExecution = handleDeleteExecution;
+exports.handleExecutionLogs = handleExecutionLogs;
 exports.handleHealthCheck = handleHealthCheck;
 exports.handleDiagnostic = handleDiagnostic;
 exports.handleWorkflowVersions = handleWorkflowVersions;
@@ -66,6 +67,10 @@ exports.handleInsertRows = handleInsertRows;
 exports.handleUpdateRows = handleUpdateRows;
 exports.handleUpsertRows = handleUpsertRows;
 exports.handleDeleteRows = handleDeleteRows;
+exports.handleListCredentials = handleListCredentials;
+exports.handleGetCredential = handleGetCredential;
+exports.handleDeleteCredential = handleDeleteCredential;
+exports.handleBatchOperations = handleBatchOperations;
 const n8n_api_client_1 = require("../services/n8n-api-client");
 const n8n_api_1 = require("../config/n8n-api");
 const n8n_api_2 = require("../types/n8n-api");
@@ -235,7 +240,8 @@ const autofixWorkflowSchema = zod_1.z.object({
     maxFixes: zod_1.z.number().optional().default(50)
 });
 const testWorkflowSchema = zod_1.z.object({
-    workflowId: zod_1.z.string(),
+    workflowId: zod_1.z.string().optional(),
+    id: zod_1.z.string().optional(),
     triggerType: zod_1.z.enum(['webhook', 'form', 'chat']).optional(),
     httpMethod: zod_1.z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional(),
     webhookPath: zod_1.z.string().optional(),
@@ -245,6 +251,11 @@ const testWorkflowSchema = zod_1.z.object({
     headers: zod_1.z.record(zod_1.z.string()).optional(),
     timeout: zod_1.z.number().optional(),
     waitForResponse: zod_1.z.boolean().optional(),
+}).transform(data => ({
+    ...data,
+    workflowId: data.workflowId || data.id || '',
+})).refine(data => data.workflowId, {
+    message: 'workflowId or id is required',
 });
 const listExecutionsSchema = zod_1.z.object({
     limit: zod_1.z.number().min(1).max(100).optional(),
@@ -875,6 +886,29 @@ async function handleAutofixWorkflow(args, repository, context) {
                     }
                 };
             }
+            let verified = false;
+            let remainingIssues = 0;
+            try {
+                const refetchResult = await handleGetWorkflow({ id: workflow.id, mode: 'full' }, context);
+                if (refetchResult.success && refetchResult.data) {
+                    const refetchedWorkflow = refetchResult.data;
+                    const postFixIssues = [];
+                    for (const node of refetchedWorkflow.nodes) {
+                        const formatContext = {
+                            nodeType: node.type,
+                            nodeName: node.name,
+                            nodeId: node.id
+                        };
+                        const nodeIssues = expression_format_validator_1.ExpressionFormatValidator.validateNodeParameters(node.parameters, formatContext);
+                        postFixIssues.push(...nodeIssues);
+                    }
+                    remainingIssues = postFixIssues.length;
+                    verified = remainingIssues === 0;
+                }
+            }
+            catch (verifyError) {
+                logger_1.logger.warn('Failed to verify autofix persistence:', verifyError);
+            }
             return {
                 success: true,
                 data: {
@@ -884,7 +918,11 @@ async function handleAutofixWorkflow(args, repository, context) {
                     fixes: fixResult.fixes,
                     summary: fixResult.summary,
                     stats: fixResult.stats,
-                    message: `Successfully applied ${fixResult.fixes.length} fixes to workflow "${workflow.name}"`
+                    verified,
+                    remainingIssues,
+                    message: verified
+                        ? `Successfully applied and verified ${fixResult.fixes.length} fixes to workflow "${workflow.name}"`
+                        : `Applied ${fixResult.fixes.length} fixes to workflow "${workflow.name}" but verification found ${remainingIssues} remaining issues`
                 }
             };
         }
@@ -1176,6 +1214,122 @@ async function handleDeleteExecution(args, context) {
         return {
             success: true,
             message: `Execution ${id} deleted successfully`
+        };
+    }
+    catch (error) {
+        if (error instanceof zod_1.z.ZodError) {
+            return {
+                success: false,
+                error: 'Invalid input',
+                details: { errors: error.errors }
+            };
+        }
+        if (error instanceof n8n_errors_1.N8nApiError) {
+            return {
+                success: false,
+                error: (0, n8n_errors_1.getUserFriendlyErrorMessage)(error),
+                code: error.code
+            };
+        }
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error occurred'
+        };
+    }
+}
+async function handleExecutionLogs(args, context) {
+    try {
+        const client = ensureApiConfigured(context);
+        const input = zod_1.z.object({
+            action: zod_1.z.literal('logs'),
+            workflowId: zod_1.z.string().optional(),
+            id: zod_1.z.string().optional(),
+            limit: zod_1.z.number().min(1).max(50).optional().default(20),
+            status: zod_1.z.enum(['success', 'error', 'waiting']).optional(),
+            format: zod_1.z.enum(['summary', 'detailed']).optional().default('summary'),
+        }).parse(args);
+        const params = {
+            limit: input.limit,
+            includeData: input.format === 'detailed',
+        };
+        const resolvedWorkflowId = input.workflowId || input.id;
+        if (resolvedWorkflowId)
+            params.workflowId = resolvedWorkflowId;
+        if (input.status)
+            params.status = input.status;
+        const executions = await client.listExecutions(params);
+        if (!executions.data || executions.data.length === 0) {
+            return {
+                success: true,
+                data: {
+                    logs: [],
+                    message: resolvedWorkflowId
+                        ? `No executions found for workflow ${resolvedWorkflowId}. Check if EXECUTIONS_DATA_SAVE_ON_SUCCESS is set to 'all' in your n8n instance.`
+                        : 'No executions found.',
+                    hint: 'If only errors are shown, your n8n may have EXECUTIONS_DATA_SAVE_ON_SUCCESS=none (only errors saved).'
+                }
+            };
+        }
+        const logs = executions.data.map((exec) => {
+            const startedAt = exec.startedAt ? new Date(exec.startedAt) : null;
+            const stoppedAt = exec.stoppedAt ? new Date(exec.stoppedAt) : null;
+            const duration = startedAt && stoppedAt
+                ? `${((stoppedAt.getTime() - startedAt.getTime()) / 1000).toFixed(1)}s`
+                : 'N/A';
+            const base = {
+                id: exec.id,
+                status: exec.status || (exec.finished ? 'success' : 'error'),
+                workflowId: exec.workflowId,
+                workflowName: exec.workflowData?.name || exec.workflowId,
+                startedAt: startedAt?.toISOString() || 'unknown',
+                duration,
+                mode: exec.mode || 'unknown',
+            };
+            if (input.format === 'detailed') {
+                if (exec.data?.resultData?.error) {
+                    const err = exec.data.resultData.error;
+                    const errorInfo = {
+                        message: err.message || 'Unknown error',
+                        node: err.node?.name || err.context?.nodeName || 'unknown',
+                        type: err.name || 'Error',
+                    };
+                    if (err.description)
+                        errorInfo.description = err.description;
+                    base.error = errorInfo;
+                }
+                if (exec.data?.resultData?.runData) {
+                    const runData = exec.data.resultData.runData;
+                    base.nodeResults = Object.entries(runData).map(([nodeName, nodeRuns]) => {
+                        const lastRun = Array.isArray(nodeRuns) ? nodeRuns[nodeRuns.length - 1] : nodeRuns;
+                        const itemCount = lastRun?.data?.main?.[0]?.length || 0;
+                        const nodeError = lastRun?.error;
+                        return {
+                            node: nodeName,
+                            items: itemCount,
+                            status: nodeError ? 'error' : 'success',
+                            error: nodeError ? (nodeError.message || String(nodeError)) : undefined,
+                            executionTime: lastRun?.executionTime != null ? `${lastRun.executionTime}ms` : undefined,
+                        };
+                    });
+                }
+            }
+            return base;
+        });
+        const statusCounts = {};
+        for (const log of logs) {
+            const s = String(log.status);
+            statusCounts[s] = (statusCounts[s] || 0) + 1;
+        }
+        return {
+            success: true,
+            data: {
+                logs,
+                summary: {
+                    total: logs.length,
+                    ...statusCounts,
+                },
+                format: input.format,
+            }
         };
     }
     catch (error) {
@@ -2176,10 +2330,13 @@ async function handleUpdateTable(args, context) {
         const client = ensureApiConfigured(context);
         const { tableId, name } = updateTableSchema.parse(args);
         const dataTable = await client.updateDataTable(tableId, { name });
+        const rawArgs = args;
+        const hasColumns = rawArgs && typeof rawArgs === 'object' && 'columns' in rawArgs;
         return {
             success: true,
             data: dataTable,
-            message: `Data table renamed to "${dataTable.name}"`,
+            message: `Data table renamed to "${dataTable.name}"` +
+                (hasColumns ? '. Note: columns parameter was ignored — table schema is immutable after creation via the public API' : ''),
         };
     }
     catch (error) {
@@ -2284,6 +2441,207 @@ async function handleDeleteRows(args, context) {
     }
     catch (error) {
         return handleDataTableError(error);
+    }
+}
+async function handleListCredentials(args, context) {
+    try {
+        const client = ensureApiConfigured(context);
+        const input = zod_1.z.object({
+            action: zod_1.z.literal('list'),
+            limit: zod_1.z.number().optional(),
+            cursor: zod_1.z.string().optional(),
+        }).parse(args);
+        const result = await client.listCredentials({
+            limit: input.limit,
+            cursor: input.cursor,
+        });
+        return {
+            success: true,
+            data: {
+                credentials: result.data.map(c => ({
+                    id: c.id,
+                    name: c.name,
+                    type: c.type,
+                    createdAt: c.createdAt,
+                    updatedAt: c.updatedAt,
+                })),
+                count: result.data.length,
+                nextCursor: result.nextCursor || null,
+            }
+        };
+    }
+    catch (error) {
+        if (error instanceof zod_1.z.ZodError) {
+            return { success: false, error: 'Invalid input', details: { errors: error.errors } };
+        }
+        if (error instanceof n8n_errors_1.N8nApiError) {
+            return { success: false, error: (0, n8n_errors_1.getUserFriendlyErrorMessage)(error) };
+        }
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+}
+async function handleGetCredential(args, context) {
+    try {
+        const client = ensureApiConfigured(context);
+        const input = zod_1.z.object({
+            action: zod_1.z.literal('get'),
+            id: zod_1.z.string(),
+        }).parse(args);
+        const credential = await client.getCredential(input.id);
+        return {
+            success: true,
+            data: {
+                id: credential.id,
+                name: credential.name,
+                type: credential.type,
+                createdAt: credential.createdAt,
+                updatedAt: credential.updatedAt,
+            }
+        };
+    }
+    catch (error) {
+        if (error instanceof zod_1.z.ZodError) {
+            return { success: false, error: 'Invalid input', details: { errors: error.errors } };
+        }
+        if (error instanceof n8n_errors_1.N8nApiError) {
+            return { success: false, error: (0, n8n_errors_1.getUserFriendlyErrorMessage)(error) };
+        }
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+}
+async function handleDeleteCredential(args, context) {
+    try {
+        const client = ensureApiConfigured(context);
+        const input = zod_1.z.object({
+            action: zod_1.z.literal('delete'),
+            id: zod_1.z.string(),
+        }).parse(args);
+        await client.deleteCredential(input.id);
+        return {
+            success: true,
+            data: { deleted: true, id: input.id },
+            message: `Credential ${input.id} deleted successfully`
+        };
+    }
+    catch (error) {
+        if (error instanceof zod_1.z.ZodError) {
+            return { success: false, error: 'Invalid input', details: { errors: error.errors } };
+        }
+        if (error instanceof n8n_errors_1.N8nApiError) {
+            return { success: false, error: (0, n8n_errors_1.getUserFriendlyErrorMessage)(error) };
+        }
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+}
+async function handleBatchOperations(args, repository, context) {
+    try {
+        const client = ensureApiConfigured(context);
+        const input = zod_1.z.object({
+            action: zod_1.z.enum(['validate_all', 'autofix_all', 'list_issues']),
+            workflowIds: zod_1.z.array(zod_1.z.string()).optional(),
+            applyFixes: zod_1.z.boolean().optional().default(false),
+        }).parse(args);
+        const MAX_BATCH_SIZE = 50;
+        let workflowIds;
+        if (input.workflowIds && input.workflowIds.length > 0) {
+            workflowIds = input.workflowIds.slice(0, MAX_BATCH_SIZE);
+        }
+        else {
+            const listResult = await client.listWorkflows({ active: true, limit: MAX_BATCH_SIZE });
+            workflowIds = listResult.data.filter((w) => w.id !== undefined).map((w) => w.id);
+        }
+        if (input.action === 'autofix_all' && input.applyFixes && !input.workflowIds) {
+            return {
+                success: false,
+                error: 'Safety: autofix_all with applyFixes=true requires explicit workflowIds. Provide the specific workflow IDs to modify.',
+            };
+        }
+        const results = [];
+        const validator = new workflow_validator_1.WorkflowValidator(repository, enhanced_config_validator_1.EnhancedConfigValidator);
+        let successCount = 0;
+        let errorCount = 0;
+        let fixCount = 0;
+        for (const id of workflowIds) {
+            try {
+                if (input.action === 'autofix_all') {
+                    const result = await handleAutofixWorkflow({ id, applyFixes: input.applyFixes }, repository, context);
+                    const data = result.data;
+                    const fixes = data?.fixesApplied ?? data?.fixesAvailable ?? 0;
+                    fixCount += fixes;
+                    results.push({
+                        id,
+                        name: data?.workflowName || id,
+                        status: result.success ? (fixes > 0 ? `${fixes} fixes` : 'clean') : 'error',
+                        details: result.success ? undefined : result.error,
+                    });
+                    if (result.success)
+                        successCount++;
+                    else
+                        errorCount++;
+                }
+                else {
+                    const workflowResult = await handleGetWorkflow({ id, mode: 'full' }, context);
+                    if (!workflowResult.success) {
+                        results.push({ id, name: id, status: 'fetch_error', details: workflowResult.error });
+                        errorCount++;
+                        continue;
+                    }
+                    const workflow = workflowResult.data;
+                    const validation = await validator.validateWorkflow(workflow, {
+                        validateNodes: true,
+                        validateConnections: true,
+                        validateExpressions: true,
+                        profile: 'ai-friendly'
+                    });
+                    const hasIssues = validation.errors.length > 0 || validation.warnings.length > 0;
+                    if (input.action === 'list_issues' && !hasIssues) {
+                        successCount++;
+                        continue;
+                    }
+                    results.push({
+                        id,
+                        name: workflow.name || id,
+                        status: hasIssues ? `${validation.errors.length}E/${validation.warnings.length}W` : 'clean',
+                        details: hasIssues ? {
+                            errors: validation.errors.slice(0, 3).map((e) => (typeof e === 'object' && e !== null && 'message' in e) ? e.message : e),
+                            warnings: validation.warnings.slice(0, 3).map((w) => (typeof w === 'object' && w !== null && 'message' in w) ? w.message : w),
+                        } : undefined,
+                    });
+                    if (!hasIssues)
+                        successCount++;
+                    else
+                        errorCount++;
+                }
+            }
+            catch (err) {
+                results.push({
+                    id,
+                    name: id,
+                    status: 'error',
+                    details: err instanceof Error ? err.message : 'Unknown error'
+                });
+                errorCount++;
+            }
+        }
+        return {
+            success: true,
+            data: {
+                action: input.action,
+                totalProcessed: workflowIds.length,
+                success: successCount,
+                issues: errorCount,
+                totalFixes: input.action === 'autofix_all' ? fixCount : undefined,
+                results,
+            },
+            message: `Processed ${workflowIds.length} workflows: ${successCount} clean, ${errorCount} with issues` +
+                (input.action === 'autofix_all' ? `, ${fixCount} fixes ${input.applyFixes ? 'applied' : 'available'}` : '')
+        };
+    }
+    catch (error) {
+        if (error instanceof zod_1.z.ZodError) {
+            return { success: false, error: 'Invalid input', details: { errors: error.errors } };
+        }
+        return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
 }
 //# sourceMappingURL=handlers-n8n-manager.js.map

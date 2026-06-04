@@ -330,7 +330,11 @@ exports.n8nManagementTools = [
             properties: {
                 workflowId: {
                     type: 'string',
-                    description: 'Workflow ID to execute (required)'
+                    description: 'Workflow ID to execute (required). Alias: "id"'
+                },
+                id: {
+                    type: 'string',
+                    description: 'Alias for workflowId'
                 },
                 triggerType: {
                     type: 'string',
@@ -382,18 +386,18 @@ exports.n8nManagementTools = [
     },
     {
         name: 'n8n_executions',
-        description: `Manage workflow executions: get details, list, or delete. Use action='get' with id for execution details, action='list' for listing executions, action='delete' to remove execution record.`,
+        description: `Manage workflow executions: get details, list, delete, or view parsed logs. Use action='get' with id for execution details, action='list' for listing executions, action='delete' to remove execution record, action='logs' for a clean parsed log view of recent executions.`,
         inputSchema: {
             type: 'object',
             properties: {
                 action: {
                     type: 'string',
-                    enum: ['get', 'list', 'delete'],
-                    description: 'Operation: get=get execution details, list=list executions, delete=delete execution'
+                    enum: ['get', 'list', 'delete', 'logs'],
+                    description: 'Operation: get=get execution details, list=list executions, delete=delete execution, logs=parsed readable log view'
                 },
                 id: {
                     type: 'string',
-                    description: 'Execution ID (required for action=get or action=delete)'
+                    description: 'Execution ID (required for action=get or action=delete). Also used as workflowId alias for action=logs.'
                 },
                 mode: {
                     type: 'string',
@@ -431,7 +435,7 @@ exports.n8nManagementTools = [
                 },
                 limit: {
                     type: 'number',
-                    description: 'For action=list: number of executions to return (1-100, default: 100)'
+                    description: 'For action=list: number of executions to return (1-100, default: 100). For action=logs: number of executions to fetch (1-50, default: 20).'
                 },
                 cursor: {
                     type: 'string',
@@ -439,7 +443,7 @@ exports.n8nManagementTools = [
                 },
                 workflowId: {
                     type: 'string',
-                    description: 'For action=list: filter by workflow ID'
+                    description: 'For action=list: filter by workflow ID. For action=logs: workflow ID to fetch logs for.'
                 },
                 projectId: {
                     type: 'string',
@@ -448,11 +452,17 @@ exports.n8nManagementTools = [
                 status: {
                     type: 'string',
                     enum: ['success', 'error', 'waiting'],
-                    description: 'For action=list: filter by execution status'
+                    description: 'For action=list or action=logs: filter by execution status'
                 },
                 includeData: {
                     type: 'boolean',
                     description: 'For action=list: include execution data (default: false)'
+                },
+                format: {
+                    type: 'string',
+                    enum: ['summary', 'detailed'],
+                    description: 'For action=logs: summary (one line per execution) or detailed (include error messages and node info). Default: summary',
+                    default: 'summary'
                 }
             },
             required: ['action']
@@ -590,7 +600,7 @@ exports.n8nManagementTools = [
     },
     {
         name: 'n8n_manage_datatable',
-        description: `Manage n8n data tables and rows. Actions: createTable, listTables, getTable, updateTable, deleteTable, getRows, insertRows, updateRows, upsertRows, deleteRows. Requires n8n enterprise/cloud with data tables feature.`,
+        description: `Manage n8n data tables and rows. Actions: createTable, listTables, getTable, updateTable, deleteTable, getRows, insertRows, updateRows, upsertRows, deleteRows.`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -600,10 +610,10 @@ exports.n8nManagementTools = [
                     description: 'Operation to perform',
                 },
                 tableId: { type: 'string', description: 'Data table ID (required for all actions except createTable and listTables)' },
-                name: { type: 'string', description: 'For createTable/updateTable: table name' },
+                name: { type: 'string', description: 'For createTable: table name. For updateTable: new name (rename only — schema is immutable after creation)' },
                 columns: {
                     type: 'array',
-                    description: 'For createTable: column definitions',
+                    description: 'For createTable only: column definitions (schema is immutable after creation via public API)',
                     items: {
                         type: 'object',
                         properties: {
@@ -632,6 +642,73 @@ exports.n8nManagementTools = [
             title: 'Manage Data Tables',
             readOnlyHint: false,
             destructiveHint: true,
+            openWorldHint: true,
+        },
+    },
+    {
+        name: 'n8n_manage_credentials',
+        description: 'Manage n8n credentials. Actions: list (all credentials), get (by ID), delete (by ID). Note: credential secrets are never exposed by the n8n API.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                action: {
+                    type: 'string',
+                    enum: ['list', 'get', 'delete'],
+                    description: 'Action to perform'
+                },
+                id: {
+                    type: 'string',
+                    description: 'Credential ID (required for get, delete)'
+                },
+                limit: {
+                    type: 'number',
+                    description: 'For list: max results (default 100)',
+                    default: 100
+                },
+                cursor: {
+                    type: 'string',
+                    description: 'For list: pagination cursor'
+                },
+            },
+            required: ['action'],
+        },
+        annotations: {
+            title: 'Manage Credentials',
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false,
+            openWorldHint: true,
+        },
+    },
+    {
+        name: 'n8n_batch_operations',
+        description: 'Run operations across multiple workflows. Actions: validate_all (validate all active workflows), autofix_all (autofix all active workflows), list_issues (list all workflows with validation issues). Optional workflowIds filter.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                action: {
+                    type: 'string',
+                    enum: ['validate_all', 'autofix_all', 'list_issues'],
+                    description: 'Batch action to perform'
+                },
+                workflowIds: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Optional: specific workflow IDs to process. If omitted, processes all active workflows.'
+                },
+                applyFixes: {
+                    type: 'boolean',
+                    description: 'For autofix_all: apply fixes (true) or preview only (false, default)',
+                    default: false
+                },
+            },
+            required: ['action'],
+        },
+        annotations: {
+            title: 'Batch Operations',
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false,
             openWorldHint: true,
         },
     },

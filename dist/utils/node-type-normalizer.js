@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.NodeTypeNormalizer = void 0;
 class NodeTypeNormalizer {
-    static normalizeToFullForm(type) {
+    static normalizeToShortForm(type) {
         if (!type || typeof type !== 'string') {
             return type;
         }
@@ -17,9 +17,12 @@ class NodeTypeNormalizer {
         }
         return type;
     }
+    static normalizeToFullForm(type) {
+        return this.normalizeToShortForm(type);
+    }
     static normalizeWithDetails(type) {
         const original = type;
-        const normalized = this.normalizeToFullForm(type);
+        const normalized = this.normalizeToShortForm(type);
         return {
             original,
             normalized,
@@ -39,7 +42,7 @@ class NodeTypeNormalizer {
     static normalizeBatch(types) {
         const result = new Map();
         for (const type of types) {
-            result.set(type, this.normalizeToFullForm(type));
+            result.set(type, this.normalizeToShortForm(type));
         }
         return result;
     }
@@ -51,7 +54,7 @@ class NodeTypeNormalizer {
             ...workflow,
             nodes: workflow.nodes.map((node) => ({
                 ...node,
-                type: this.normalizeToFullForm(node.type)
+                type: this.normalizeToShortForm(node.type)
             }))
         };
     }

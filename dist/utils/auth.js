@@ -66,12 +66,9 @@ class AuthManager {
             if (!plainToken || !expectedToken) {
                 return false;
             }
-            const plainBuffer = Buffer.from(plainToken, 'utf8');
-            const expectedBuffer = Buffer.from(expectedToken, 'utf8');
-            if (plainBuffer.length !== expectedBuffer.length) {
-                return false;
-            }
-            return crypto_1.default.timingSafeEqual(plainBuffer, expectedBuffer);
+            const hashA = crypto_1.default.createHash('sha256').update(plainToken).digest();
+            const hashB = crypto_1.default.createHash('sha256').update(expectedToken).digest();
+            return crypto_1.default.timingSafeEqual(hashA, hashB);
         }
         catch (error) {
             return false;

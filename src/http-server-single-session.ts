@@ -305,6 +305,58 @@ export class SingleSessionHTTPServer {
   }
   
   /**
+   * Authenticate a request using Bearer token.
+   * Returns true if authenticated, false if response was already sent with 401.
+   */
+  private authenticateRequest(req: express.Request, res: express.Response): boolean {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) {
+      logger.warn('Authentication failed: Missing Authorization header', {
+        ip: req.ip,
+        reason: 'no_auth_header'
+      });
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Unauthorized' },
+        id: null
+      });
+      return false;
+    }
+
+    if (!authHeader.startsWith('Bearer ')) {
+      logger.warn('Authentication failed: Invalid format', {
+        ip: req.ip,
+        reason: 'invalid_auth_format'
+      });
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Unauthorized' },
+        id: null
+      });
+      return false;
+    }
+
+    const token = authHeader.slice(7).trim();
+    const isValidToken = this.authToken && AuthManager.timingSafeCompare(token, this.authToken);
+
+    if (!isValidToken) {
+      logger.warn('Authentication failed: Invalid token', {
+        ip: req.ip,
+        reason: 'invalid_token'
+      });
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Unauthorized' },
+        id: null
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Update session last access time
    */
   private updateSessionAccess(sessionId: string): void {
@@ -479,15 +531,11 @@ export class SingleSessionHTTPServer {
         const isInitialize = req.body ? isInitializeRequest(req.body) : false;
         
         // Log comprehensive incoming request details for debugging
-        logger.info('handleRequest: Processing MCP request - SDK PATTERN', {
+        logger.debug('handleRequest: Processing MCP request', {
           requestId: req.get('x-request-id') || 'unknown',
           sessionId: sessionId,
-          method: req.method,
-          url: req.url,
-          bodyType: typeof req.body,
-          bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined',
-          existingTransports: Object.keys(this.transports),
-          isInitializeRequest: isInitialize
+          isInitializeRequest: isInitialize,
+          activeSessions: Object.keys(this.transports).length
         });
         
         let transport: StreamableHTTPServerTransport;
@@ -848,20 +896,23 @@ export class SingleSessionHTTPServer {
       res.setHeader('X-Frame-Options', 'DENY');
       res.setHeader('X-XSS-Protection', '1; mode=block');
       res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
       next();
     });
     
     // CORS configuration
     app.use((req, res, next) => {
-      const allowedOrigin = process.env.CORS_ORIGIN || '*';
-      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-      res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
-      res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
-      res.setHeader('Access-Control-Max-Age', '86400');
-      
+      const allowedOrigin = process.env.CORS_ORIGIN;
+      if (allowedOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+        res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Mcp-Session-Id');
+        res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+        res.setHeader('Access-Control-Max-Age', '86400');
+      }
+
       if (req.method === 'OPTIONS') {
-        res.sendStatus(204);
+        res.sendStatus(allowedOrigin ? 204 : 403);
         return;
       }
       next();
@@ -880,7 +931,7 @@ export class SingleSessionHTTPServer {
     // Root endpoint with API information
     app.get('/', (req, res) => {
       const port = parseInt(process.env.PORT || '3000');
-      const host = process.env.HOST || '0.0.0.0';
+      const host = process.env.HOST || '127.0.0.1';
       const baseUrl = detectBaseUrl(req, host, port);
       const endpoints = formatEndpointUrls(baseUrl);
       
@@ -911,34 +962,16 @@ export class SingleSessionHTTPServer {
 
     // Health check endpoint (no body parsing needed for GET)
     app.get('/health', (req, res) => {
-      const activeTransports = Object.keys(this.transports);
-      const activeServers = Object.keys(this.servers);
       const sessionMetrics = this.getSessionMetrics();
-      const isProduction = process.env.NODE_ENV === 'production';
-      const isDefaultToken = this.authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh';
-      
-      res.json({ 
-        status: 'ok', 
-        mode: 'sdk-pattern-transports',
+      res.json({
+        status: 'ok',
+        mode: 'single-session',
         version: PROJECT_VERSION,
-        environment: process.env.NODE_ENV || 'development',
         uptime: Math.floor(process.uptime()),
         sessions: {
           active: sessionMetrics.activeSessions,
-          total: sessionMetrics.totalSessions,
-          expired: sessionMetrics.expiredSessions,
           max: MAX_SESSIONS,
-          usage: `${sessionMetrics.activeSessions}/${MAX_SESSIONS}`,
-          sessionIds: activeTransports
         },
-        security: {
-          production: isProduction,
-          defaultToken: isDefaultToken,
-          tokenLength: this.authToken?.length || 0
-        },
-        activeTransports: activeTransports.length, // Legacy field
-        activeServers: activeServers.length, // Legacy field
-        legacySessionActive: !!this.session, // For SSE compatibility
         memory: {
           used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
           total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
@@ -948,54 +981,13 @@ export class SingleSessionHTTPServer {
       });
     });
     
-    // Test endpoint for manual testing without auth
-    app.post('/mcp/test', jsonParser, async (req: express.Request, res: express.Response): Promise<void> => {
-      logger.info('TEST ENDPOINT: Manual test request received', {
-        method: req.method,
-        headers: req.headers,
-        body: req.body,
-        bodyType: typeof req.body,
-        bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined'
-      });
-      
-      // Negotiate protocol version for test endpoint
-      const negotiationResult = negotiateProtocolVersion(
-        undefined, // no client version in test
-        undefined, // no client info
-        req.get('user-agent'),
-        req.headers
-      );
-      
-      logProtocolNegotiation(negotiationResult, logger, 'TEST_ENDPOINT');
-      
-      // Test what a basic MCP initialize request should look like
-      const testResponse = {
-        jsonrpc: '2.0',
-        id: req.body?.id || 1,
-        result: {
-          protocolVersion: negotiationResult.version,
-          capabilities: {
-            tools: {}
-          },
-          serverInfo: {
-            name: 'n8n-mcp',
-            version: PROJECT_VERSION
-          }
-        }
-      };
-      
-      logger.info('TEST ENDPOINT: Sending test response', {
-        response: testResponse
-      });
-      
-      res.json(testResponse);
-    });
-
     // MCP information endpoint (no auth required for discovery) and SSE support
     app.get('/mcp', async (req, res) => {
       // Handle StreamableHTTP transport requests with new pattern
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       if (sessionId && this.transports[sessionId]) {
+        // Transport GET requests require auth
+        if (!this.authenticateRequest(req, res)) return;
         // Let the StreamableHTTPServerTransport handle the GET request
         try {
           await this.transports[sessionId].handleRequest(req, res, undefined);
@@ -1005,12 +997,14 @@ export class SingleSessionHTTPServer {
           // Fall through to standard response
         }
       }
-      
+
       // Check Accept header for text/event-stream (SSE support)
       const accept = req.headers.accept;
       if (accept && accept.includes('text/event-stream')) {
+        // SSE connections require auth
+        if (!this.authenticateRequest(req, res)) return;
         logger.info('SSE stream request received - establishing SSE connection');
-        
+
         try {
           // Create or reset session for SSE
           await this.resetSessionSSE(res);
@@ -1084,6 +1078,7 @@ export class SingleSessionHTTPServer {
 
     // Session termination endpoint
     app.delete('/mcp', async (req: express.Request, res: express.Response): Promise<void> => {
+      if (!this.authenticateRequest(req, res)) return;
       const mcpSessionId = req.headers['mcp-session-id'] as string;
       
       if (!mcpSessionId) {
@@ -1176,21 +1171,14 @@ export class SingleSessionHTTPServer {
 
     // Main MCP endpoint with authentication and rate limiting
     app.post('/mcp', authLimiter, jsonParser, async (req: express.Request, res: express.Response): Promise<void> => {
-      // Log comprehensive debug info about the request
-      logger.info('POST /mcp request received - DETAILED DEBUG', {
-        headers: req.headers,
-        readable: req.readable,
-        readableEnded: req.readableEnded,
-        complete: req.complete,
-        bodyType: typeof req.body,
-        bodyContent: req.body ? JSON.stringify(req.body, null, 2) : 'undefined',
+      // Log request details at debug level to avoid leaking sensitive headers
+      logger.debug('POST /mcp request received', {
         contentLength: req.get('content-length'),
         contentType: req.get('content-type'),
         userAgent: req.get('user-agent'),
         ip: req.ip,
-        method: req.method,
-        url: req.url,
-        originalUrl: req.originalUrl
+        hasAuth: !!req.headers.authorization,
+        hasSessionId: !!req.headers['mcp-session-id']
       });
       
       // Handle connection close to immediately clean up sessions
@@ -1224,71 +1212,9 @@ export class SingleSessionHTTPServer {
         });
       }
       
-      // Enhanced authentication check with specific logging
-      const authHeader = req.headers.authorization;
-      
-      // Check if Authorization header is missing
-      if (!authHeader) {
-        logger.warn('Authentication failed: Missing Authorization header', { 
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          reason: 'no_auth_header'
-        });
-        res.status(401).json({ 
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Unauthorized'
-          },
-          id: null
-        });
-        return;
-      }
-      
-      // Check if Authorization header has Bearer prefix
-      if (!authHeader.startsWith('Bearer ')) {
-        logger.warn('Authentication failed: Invalid Authorization header format (expected Bearer token)', { 
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          reason: 'invalid_auth_format',
-          headerPrefix: authHeader.substring(0, Math.min(authHeader.length, 10)) + '...'  // Log first 10 chars for debugging
-        });
-        res.status(401).json({ 
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Unauthorized'
-          },
-          id: null
-        });
-        return;
-      }
-      
-      // Extract token and trim whitespace
-      const token = authHeader.slice(7).trim();
+      // Authenticate using shared auth method (timing-safe Bearer token check)
+      if (!this.authenticateRequest(req, res)) return;
 
-      // SECURITY: Use timing-safe comparison to prevent timing attacks
-      // See: https://github.com/czlonkowski/n8n-mcp/issues/265 (CRITICAL-02)
-      const isValidToken = this.authToken &&
-        AuthManager.timingSafeCompare(token, this.authToken);
-
-      if (!isValidToken) {
-        logger.warn('Authentication failed: Invalid token', {
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          reason: 'invalid_token'
-        });
-        res.status(401).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Unauthorized'
-          },
-          id: null
-        });
-        return;
-      }
-      
       // Handle request with single session
       logger.info('Authentication successful - proceeding to handleRequest', {
         hasSession: !!this.session,
@@ -1296,16 +1222,13 @@ export class SingleSessionHTTPServer {
         sessionInitialized: this.session?.initialized
       });
 
-      // Extract instance context from headers if present (for multi-tenant support)
-      const instanceContext: InstanceContext | undefined = (() => {
-        // Use type-safe header extraction
+      // Extract instance context - now with SSRF validation
+      const instanceContext: InstanceContext | undefined = await (async () => {
         const headers = extractMultiTenantHeaders(req);
         const hasUrl = headers['x-n8n-url'];
         const hasKey = headers['x-n8n-key'];
-
         if (!hasUrl && !hasKey) return undefined;
 
-        // Create context with proper type handling
         const context: InstanceContext = {
           n8nApiUrl: hasUrl || undefined,
           n8nApiKey: hasKey || undefined,
@@ -1313,7 +1236,6 @@ export class SingleSessionHTTPServer {
           sessionId: headers['x-session-id'] || undefined
         };
 
-        // Add metadata if available
         if (req.headers['user-agent'] || req.ip) {
           context.metadata = {
             userAgent: req.headers['user-agent'] as string | undefined,
@@ -1321,7 +1243,6 @@ export class SingleSessionHTTPServer {
           };
         }
 
-        // Validate the context
         const validation = validateInstanceContext(context);
         if (!validation.valid) {
           logger.warn('Invalid instance context from headers', {
@@ -1330,6 +1251,19 @@ export class SingleSessionHTTPServer {
             hasKey: !!hasKey
           });
           return undefined;
+        }
+
+        // SSRF validation on n8n API URL
+        if (context.n8nApiUrl) {
+          const { SSRFProtection } = await import('./utils/ssrf-protection');
+          const ssrfResult = await SSRFProtection.validateWebhookUrl(context.n8nApiUrl);
+          if (!ssrfResult.valid) {
+            logger.warn('SSRF: Blocked n8n API URL from headers', {
+              reason: ssrfResult.reason,
+              instanceId: context.instanceId
+            });
+            return undefined;
+          }
         }
 
         return context;
@@ -1382,7 +1316,7 @@ export class SingleSessionHTTPServer {
     });
     
     const port = parseInt(process.env.PORT || '3000');
-    const host = process.env.HOST || '0.0.0.0';
+    const host = process.env.HOST || '127.0.0.1';
     
     this.expressServer = app.listen(port, host, () => {
       const isProduction = process.env.NODE_ENV === 'production';
@@ -1639,7 +1573,7 @@ export class SingleSessionHTTPServer {
    * const count = server.restoreSessionState(sessions);
    * console.log(`Restored ${count} sessions`);
    */
-  public restoreSessionState(sessions: SessionState[]): number {
+  public async restoreSessionState(sessions: SessionState[]): Promise<number> {
     let restoredCount = 0;
 
     for (const sessionState of sessions) {
@@ -1703,6 +1637,20 @@ export class SingleSessionHTTPServer {
             reason
           });
           continue;
+        }
+
+        // SSRF validation on restored n8n API URL — prevent tampered persistence from targeting internal services
+        if (sessionState.context.n8nApiUrl) {
+          const { SSRFProtection } = await import('./utils/ssrf-protection');
+          const ssrfResult = await SSRFProtection.validateWebhookUrl(sessionState.context.n8nApiUrl);
+          if (!ssrfResult.valid) {
+            logger.warn(`Skipping session ${sessionState.sessionId} - SSRF blocked: ${ssrfResult.reason}`);
+            logSecurityEvent('session_restore_failed', {
+              sessionId: sessionState.sessionId,
+              reason: `SSRF: ${ssrfResult.reason}`
+            });
+            continue;
+          }
         }
 
         // Restore session metadata

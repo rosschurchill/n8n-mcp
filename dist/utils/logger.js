@@ -12,7 +12,7 @@ class Logger {
     constructor(config) {
         this.useFileLogging = false;
         this.fileStream = null;
-        this.isStdio = process.env.MCP_MODE === 'stdio';
+        this.isStdio = process.env.MCP_MODE !== 'http';
         this.isDisabled = process.env.DISABLE_CONSOLE_OUTPUT === 'true';
         this.isHttp = process.env.MCP_MODE === 'http';
         this.isTest = process.env.NODE_ENV === 'test' || process.env.TEST_ENVIRONMENT === 'true';

@@ -15,7 +15,12 @@ export class SQLiteStorageService {
   private initSync() {
     // For benchmarks, we'll use synchronous initialization
     // In real usage, this should be async
-    const Database = require('better-sqlite3');
+    let Database;
+    try {
+      Database = require('better-sqlite3');
+    } catch (error) {
+      throw new Error('better-sqlite3 is required for SQLiteStorageService. Install with: npm install better-sqlite3');
+    }
     const db = new Database(this.dbPath);
     
     // Create a simple adapter

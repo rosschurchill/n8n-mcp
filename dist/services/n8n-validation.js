@@ -227,14 +227,6 @@ function validateWorkflowStructure(workflow) {
             }
         });
     }
-    if (workflow.nodes) {
-        workflow.nodes.forEach((node, index) => {
-            const filterErrors = validateFilterBasedNodeMetadata(node);
-            if (filterErrors.length > 0) {
-                errors.push(...filterErrors.map(err => `Node "${node.name}" (index ${index}): ${err}`));
-            }
-        });
-    }
     if (workflow.connections) {
         try {
             validateWorkflowConnections(workflow.connections);

@@ -5,8 +5,10 @@
 export class SimpleCache {
   private cache = new Map<string, { data: any; expires: number }>();
   private cleanupTimer: NodeJS.Timeout | null = null;
-  
-  constructor() {
+  private maxSize: number;
+
+  constructor(maxSize: number = 5000) {
+    this.maxSize = maxSize;
     // Clean up expired entries every minute
     this.cleanupTimer = setInterval(() => {
       const now = Date.now();
@@ -26,6 +28,17 @@ export class SimpleCache {
   }
   
   set(key: string, data: any, ttlSeconds: number = 300): void {
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      let oldestKey: string | null = null;
+      let oldestExpires = Infinity;
+      for (const [k, item] of this.cache.entries()) {
+        if (item.expires < oldestExpires) {
+          oldestExpires = item.expires;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey !== null) this.cache.delete(oldestKey);
+    }
     this.cache.set(key, {
       data,
       expires: Date.now() + (ttlSeconds * 1000)

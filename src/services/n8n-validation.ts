@@ -345,14 +345,10 @@ export function validateWorkflowStructure(workflow: Partial<Workflow>): string[]
   }
 
   // Validate filter-based nodes (IF v2.2+, Switch v3.2+) have complete metadata
-  if (workflow.nodes) {
-    workflow.nodes.forEach((node, index) => {
-      const filterErrors = validateFilterBasedNodeMetadata(node);
-      if (filterErrors.length > 0) {
-        errors.push(...filterErrors.map(err => `Node "${node.name}" (index ${index}): ${err}`));
-      }
-    });
-  }
+  // NOTE: These are non-blocking warnings — n8n auto-populates missing metadata at runtime.
+  // Previously these blocked workflow create/update, causing false rejections for valid workflows.
+  // The metadata validation remains available via validateFilterBasedNodeMetadata() for
+  // the dedicated validate_workflow tool which returns warnings separately from errors.
 
   // Validate connections
   if (workflow.connections) {

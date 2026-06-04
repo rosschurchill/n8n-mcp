@@ -10,6 +10,7 @@ import { SingleSessionHTTPServer } from './http-server-single-session';
 import { logger } from './utils/logger';
 import { InstanceContext } from './types/instance-context';
 import { SessionState } from './types/session-state';
+import { PROJECT_VERSION } from './utils/version';
 
 export interface EngineHealth {
   status: 'healthy' | 'unhealthy';
@@ -98,7 +99,7 @@ export class N8NMCPEngine {
           total: Math.round(memoryUsage.heapTotal / 1024 / 1024),
           unit: 'MB'
         },
-        version: '2.24.1'
+        version: PROJECT_VERSION
       };
     } catch (error) {
       logger.error('Health check failed:', error);
@@ -107,7 +108,7 @@ export class N8NMCPEngine {
         uptime: 0,
         sessionActive: false,
         memoryUsage: { used: 0, total: 0, unit: 'MB' },
-        version: '2.24.1'
+        version: PROJECT_VERSION
       };
     }
   }
@@ -160,7 +161,7 @@ export class N8NMCPEngine {
    * const count = engine.restoreSessionState(sessions);
    * console.log(`Restored ${count} sessions`);
    */
-  restoreSessionState(sessions: SessionState[]): number {
+  async restoreSessionState(sessions: SessionState[]): Promise<number> {
     if (!this.server) {
       logger.warn('Cannot restore sessions: server not initialized');
       return 0;

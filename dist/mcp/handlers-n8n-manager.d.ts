@@ -21,6 +21,7 @@ export declare function handleTestWorkflow(args: unknown, context?: InstanceCont
 export declare function handleGetExecution(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleListExecutions(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleDeleteExecution(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
+export declare function handleExecutionLogs(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleHealthCheck(context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleDiagnostic(request: any, context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleWorkflowVersions(args: unknown, repository: NodeRepository, context?: InstanceContext): Promise<McpToolResponse>;
@@ -36,4 +37,8 @@ export declare function handleInsertRows(args: unknown, context?: InstanceContex
 export declare function handleUpdateRows(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleUpsertRows(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
 export declare function handleDeleteRows(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
+export declare function handleListCredentials(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
+export declare function handleGetCredential(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
+export declare function handleDeleteCredential(args: unknown, context?: InstanceContext): Promise<McpToolResponse>;
+export declare function handleBatchOperations(args: unknown, repository: NodeRepository, context?: InstanceContext): Promise<McpToolResponse>;
 //# sourceMappingURL=handlers-n8n-manager.d.ts.map

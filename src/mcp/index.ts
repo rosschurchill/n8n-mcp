@@ -124,41 +124,25 @@ Learn more: https://github.com/czlonkowski/n8n-mcp/blob/main/PRIVACY.md
     checkpoints.push(STARTUP_CHECKPOINTS.MCP_HANDSHAKE_STARTING);
     
     if (mode === 'http') {
-      // Check if we should use the fixed implementation (DEPRECATED)
+      // Warn if the removed USE_FIXED_HTTP option is still set in the environment
       if (process.env.USE_FIXED_HTTP === 'true') {
-        // DEPRECATION WARNING: Fixed HTTP implementation is deprecated
-        // It does not support SSE streaming required by clients like OpenAI Codex
-        logger.warn(
-          'DEPRECATION WARNING: USE_FIXED_HTTP=true is deprecated as of v2.31.8. ' +
-          'The fixed HTTP implementation does not support SSE streaming required by clients like OpenAI Codex. ' +
-          'Please unset USE_FIXED_HTTP to use the modern SingleSessionHTTPServer which supports both JSON-RPC and SSE. ' +
-          'This option will be removed in a future version. See: https://github.com/czlonkowski/n8n-mcp/issues/524'
-        );
-        console.warn('\n⚠️  DEPRECATION WARNING ⚠️');
-        console.warn('USE_FIXED_HTTP=true is deprecated as of v2.31.8.');
-        console.warn('The fixed HTTP implementation does not support SSE streaming.');
-        console.warn('Please unset USE_FIXED_HTTP to use SingleSessionHTTPServer.');
-        console.warn('See: https://github.com/czlonkowski/n8n-mcp/issues/524\n');
-
-        // Use the deprecated fixed HTTP implementation
-        const { startFixedHTTPServer } = await import('../http-server');
-        await startFixedHTTPServer();
-      } else {
-        // HTTP mode - for remote deployment with single-session architecture
-        const { SingleSessionHTTPServer } = await import('../http-server-single-session');
-        const server = new SingleSessionHTTPServer();
-        
-        // Graceful shutdown handlers
-        const shutdown = async () => {
-          await server.shutdown();
-          process.exit(0);
-        };
-        
-        process.on('SIGTERM', shutdown);
-        process.on('SIGINT', shutdown);
-        
-        await server.start();
+        logger.warn('USE_FIXED_HTTP is no longer honored (removed in v2.31.8); the SingleSessionHTTPServer is always used in HTTP mode.');
       }
+
+      // HTTP mode - for remote deployment with single-session architecture
+      const { SingleSessionHTTPServer } = await import('../http-server-single-session');
+      const server = new SingleSessionHTTPServer();
+
+      // Graceful shutdown handlers
+      const shutdown = async () => {
+        await server.shutdown();
+        process.exit(0);
+      };
+
+      process.on('SIGTERM', shutdown);
+      process.on('SIGINT', shutdown);
+
+      await server.start();
     } else {
       // Stdio mode - for local Claude Desktop
       const server = new N8NDocumentationMCPServer(undefined, earlyLogger);

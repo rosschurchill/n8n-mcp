@@ -21,7 +21,9 @@ export declare class SingleSessionHTTPServer {
     private getActiveSessionCount;
     private canCreateSession;
     private isValidSessionId;
+    private isJsonRpcNotification;
     private sanitizeErrorForClient;
+    private authenticateRequest;
     private updateSessionAccess;
     private switchSessionContext;
     private performContextSwitch;
@@ -47,6 +49,6 @@ export declare class SingleSessionHTTPServer {
         };
     };
     exportSessionState(): SessionState[];
-    restoreSessionState(sessions: SessionState[]): number;
+    restoreSessionState(sessions: SessionState[]): Promise<number>;
 }
 //# sourceMappingURL=http-server-single-session.d.ts.map

@@ -16,6 +16,7 @@ export declare class N8NDocumentationMCPServer {
     private useSharedDatabase;
     private sharedDbState;
     private isShutdown;
+    private ftsAvailable;
     constructor(instanceContext?: InstanceContext, earlyLogger?: EarlyErrorLogger);
     close(): Promise<void>;
     private initializeDatabase;
@@ -33,6 +34,7 @@ export declare class N8NDocumentationMCPServer {
     private coerceStringifiedJsonParams;
     private listNodes;
     private getNodeInfo;
+    private hasFTS5;
     private searchNodes;
     private searchNodesFTS;
     private searchNodesFuzzy;

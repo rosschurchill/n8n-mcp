@@ -124,29 +124,17 @@ Learn more: https://github.com/czlonkowski/n8n-mcp/blob/main/PRIVACY.md
             checkpoints.push(startup_checkpoints_1.STARTUP_CHECKPOINTS.MCP_HANDSHAKE_STARTING);
             if (mode === 'http') {
                 if (process.env.USE_FIXED_HTTP === 'true') {
-                    logger_1.logger.warn('DEPRECATION WARNING: USE_FIXED_HTTP=true is deprecated as of v2.31.8. ' +
-                        'The fixed HTTP implementation does not support SSE streaming required by clients like OpenAI Codex. ' +
-                        'Please unset USE_FIXED_HTTP to use the modern SingleSessionHTTPServer which supports both JSON-RPC and SSE. ' +
-                        'This option will be removed in a future version. See: https://github.com/czlonkowski/n8n-mcp/issues/524');
-                    console.warn('\n⚠️  DEPRECATION WARNING ⚠️');
-                    console.warn('USE_FIXED_HTTP=true is deprecated as of v2.31.8.');
-                    console.warn('The fixed HTTP implementation does not support SSE streaming.');
-                    console.warn('Please unset USE_FIXED_HTTP to use SingleSessionHTTPServer.');
-                    console.warn('See: https://github.com/czlonkowski/n8n-mcp/issues/524\n');
-                    const { startFixedHTTPServer } = await Promise.resolve().then(() => __importStar(require('../http-server')));
-                    await startFixedHTTPServer();
+                    logger_1.logger.warn('USE_FIXED_HTTP is no longer honored (removed in v2.31.8); the SingleSessionHTTPServer is always used in HTTP mode.');
                 }
-                else {
-                    const { SingleSessionHTTPServer } = await Promise.resolve().then(() => __importStar(require('../http-server-single-session')));
-                    const server = new SingleSessionHTTPServer();
-                    const shutdown = async () => {
-                        await server.shutdown();
-                        process.exit(0);
-                    };
-                    process.on('SIGTERM', shutdown);
-                    process.on('SIGINT', shutdown);
-                    await server.start();
-                }
+                const { SingleSessionHTTPServer } = await Promise.resolve().then(() => __importStar(require('../http-server-single-session')));
+                const server = new SingleSessionHTTPServer();
+                const shutdown = async () => {
+                    await server.shutdown();
+                    process.exit(0);
+                };
+                process.on('SIGTERM', shutdown);
+                process.on('SIGINT', shutdown);
+                await server.start();
             }
             else {
                 const server = new server_1.N8NDocumentationMCPServer(undefined, earlyLogger);

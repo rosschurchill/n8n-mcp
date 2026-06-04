@@ -8,7 +8,13 @@ class SQLiteStorageService {
         this.initSync();
     }
     initSync() {
-        const Database = require('better-sqlite3');
+        let Database;
+        try {
+            Database = require('better-sqlite3');
+        }
+        catch (error) {
+            throw new Error('better-sqlite3 is required for SQLiteStorageService. Install with: npm install better-sqlite3');
+        }
         const db = new Database(this.dbPath);
         this.adapter = {
             prepare: (sql) => db.prepare(sql),

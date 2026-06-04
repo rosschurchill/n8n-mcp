@@ -106,7 +106,10 @@ export class AuthManager {
    * @param expectedToken - Expected token value
    * @returns true if tokens match, false otherwise
    *
-   * @security This uses crypto.timingSafeEqual to prevent timing attack vulnerabilities.
+   * @security Both inputs are hashed with SHA-256 before comparison, producing
+   * fixed-length 32-byte buffers regardless of input length. This eliminates the
+   * timing side-channel that arises from an early return on length mismatch.
+   * crypto.timingSafeEqual then performs the constant-time byte comparison.
    * Never use === or !== for token comparison as it allows attackers to discover
    * tokens character-by-character through timing analysis.
    *
@@ -120,24 +123,13 @@ export class AuthManager {
    */
   static timingSafeCompare(plainToken: string, expectedToken: string): boolean {
     try {
-      // Tokens must be non-empty
       if (!plainToken || !expectedToken) {
         return false;
       }
-
-      // Convert to buffers
-      const plainBuffer = Buffer.from(plainToken, 'utf8');
-      const expectedBuffer = Buffer.from(expectedToken, 'utf8');
-
-      // Check length first (constant time not needed for length comparison)
-      if (plainBuffer.length !== expectedBuffer.length) {
-        return false;
-      }
-
-      // Constant-time comparison
-      return crypto.timingSafeEqual(plainBuffer, expectedBuffer);
+      const hashA = crypto.createHash('sha256').update(plainToken).digest();
+      const hashB = crypto.createHash('sha256').update(expectedToken).digest();
+      return crypto.timingSafeEqual(hashA, hashB);
     } catch (error) {
-      // Buffer conversion or comparison failed
       return false;
     }
   }

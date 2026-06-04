@@ -85,6 +85,7 @@ class N8NDocumentationMCPServer {
         this.useSharedDatabase = false;
         this.sharedDbState = null;
         this.isShutdown = false;
+        this.ftsAvailable = null;
         this.dbHealthChecked = false;
         this.instanceContext = instanceContext;
         this.earlyLogger = earlyLogger || null;
@@ -421,7 +422,7 @@ class N8NDocumentationMCPServer {
             }
             const validationTools = tools.filter(t => t.name.startsWith('validate_'));
             validationTools.forEach(tool => {
-                logger_1.logger.info('Validation tool schema', {
+                logger_1.logger.debug('Validation tool schema', {
                     toolName: tool.name,
                     inputSchema: JSON.stringify(tool.inputSchema, null, 2),
                     hasOutputSchema: !!tool.outputSchema,
@@ -433,14 +434,11 @@ class N8NDocumentationMCPServer {
         });
         this.server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
             const { name, arguments: args } = request.params;
-            logger_1.logger.info('Tool call received - DETAILED DEBUG', {
-                toolName: name,
+            logger_1.logger.info(`Tool call: ${name}`, {
+                argKeys: Object.keys(args || {}),
+            });
+            logger_1.logger.debug('Tool call details', {
                 arguments: JSON.stringify(args, null, 2),
-                argumentsType: typeof args,
-                argumentsKeys: args ? Object.keys(args) : [],
-                hasNodeType: args && 'nodeType' in args,
-                hasConfig: args && 'config' in args,
-                configType: args && args.config ? typeof args.config : 'N/A',
                 rawRequest: JSON.stringify(request.params)
             });
             const disabledTools = this.getDisabledTools();
@@ -721,6 +719,7 @@ class N8NDocumentationMCPServer {
                         : { valid: false, errors: [{ field: 'action', message: 'action is required' }] };
                     break;
                 case 'n8n_manage_datatable':
+                case 'n8n_manage_credentials':
                     validationResult = args.action
                         ? { valid: true, errors: [] }
                         : { valid: false, errors: [{ field: 'action', message: 'action is required' }] };
@@ -915,9 +914,11 @@ class N8NDocumentationMCPServer {
             throw new Error(`Tool '${name}' is disabled via DISABLED_TOOLS environment variable`);
         }
         logger_1.logger.info(`Tool execution: ${name}`, {
+            argsKeys: typeof args === 'object' && args !== null ? Object.keys(args) : 'not-object'
+        });
+        logger_1.logger.debug(`Tool execution details: ${name}`, {
             args: typeof args === 'object' ? JSON.stringify(args) : args,
-            argsType: typeof args,
-            argsKeys: typeof args === 'object' ? Object.keys(args) : 'not-object'
+            argsType: typeof args
         });
         if (typeof args !== 'object' || args === null) {
             throw new Error(`Invalid arguments for tool ${name}: expected object, got ${typeof args}`);
@@ -1075,6 +1076,12 @@ class N8NDocumentationMCPServer {
                 if (!this.repository)
                     throw new Error('Repository not initialized');
                 return n8nHandlers.handleAutofixWorkflow(args, this.repository, this.instanceContext);
+            case 'n8n_batch_operations':
+                this.validateToolParams(name, args, ['action']);
+                await this.ensureInitialized();
+                if (!this.repository)
+                    throw new Error('Repository not initialized');
+                return n8nHandlers.handleBatchOperations(args, this.repository, this.instanceContext);
             case 'n8n_test_workflow':
                 this.validateToolParams(name, args, ['workflowId']);
                 return n8nHandlers.handleTestWorkflow(args, this.instanceContext);
@@ -1094,8 +1101,10 @@ class N8NDocumentationMCPServer {
                             throw new Error('id is required for action=delete');
                         }
                         return n8nHandlers.handleDeleteExecution(args, this.instanceContext);
+                    case 'logs':
+                        return n8nHandlers.handleExecutionLogs(args, this.instanceContext);
                     default:
-                        throw new Error(`Unknown action: ${execAction}. Valid actions: get, list, delete`);
+                        throw new Error(`Unknown action: ${execAction}. Valid actions: get, list, delete, logs`);
                 }
             }
             case 'n8n_health_check':
@@ -1130,6 +1139,17 @@ class N8NDocumentationMCPServer {
                     case 'deleteRows': return n8nHandlers.handleDeleteRows(args, this.instanceContext);
                     default:
                         throw new Error(`Unknown action: ${dtAction}. Valid actions: createTable, listTables, getTable, updateTable, deleteTable, getRows, insertRows, updateRows, upsertRows, deleteRows`);
+                }
+            }
+            case 'n8n_manage_credentials': {
+                this.validateToolParams(name, args, ['action']);
+                const credAction = args.action;
+                switch (credAction) {
+                    case 'list': return n8nHandlers.handleListCredentials(args, this.instanceContext);
+                    case 'get': return n8nHandlers.handleGetCredential(args, this.instanceContext);
+                    case 'delete': return n8nHandlers.handleDeleteCredential(args, this.instanceContext);
+                    default:
+                        throw new Error(`Unknown credential action: ${credAction}. Use: list, get, delete`);
                 }
             }
             default:
@@ -1238,6 +1258,17 @@ class N8NDocumentationMCPServer {
         }
         return result;
     }
+    hasFTS5() {
+        if (this.ftsAvailable !== null)
+            return this.ftsAvailable;
+        try {
+            this.ftsAvailable = !!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'").get();
+        }
+        catch {
+            this.ftsAvailable = false;
+        }
+        return this.ftsAvailable;
+    }
     async searchNodes(query, limit = 20, options) {
         await this.ensureInitialized();
         if (!this.db)
@@ -1249,11 +1280,7 @@ class N8NDocumentationMCPServer {
                 .replace(/@n8n\/n8n-nodes-langchain\./g, 'nodes-langchain.');
         }
         const searchMode = options?.mode || 'OR';
-        const ftsExists = this.db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name='nodes_fts'
-    `).get();
-        if (ftsExists) {
+        if (this.hasFTS5()) {
             logger_1.logger.debug(`Using FTS5 search with includeExamples=${options?.includeExamples}`);
             return this.searchNodesFTS(normalizedQuery, limit, searchMode, options);
         }
@@ -1419,9 +1446,13 @@ class N8NDocumentationMCPServer {
         if (words.length === 0) {
             return { query, results: [], totalCount: 0, mode: 'FUZZY' };
         }
+        const queryLower = query.toLowerCase();
+        const likeParam = `%${queryLower}%`;
         const candidateNodes = this.db.prepare(`
-      SELECT * FROM nodes
-    `).all();
+      SELECT * FROM nodes WHERE
+        LOWER(display_name) LIKE ? OR LOWER(node_type) LIKE ? OR LOWER(description) LIKE ?
+      LIMIT 500
+    `).all(likeParam, likeParam, likeParam);
         const scoredNodes = candidateNodes.map(node => {
             const score = this.calculateFuzzyScore(node, query);
             return { node, score };
@@ -2160,7 +2191,7 @@ Full documentation is being prepared. For now, use get_node_essentials for confi
             totalVersions: versions.length,
             hasVersionHistory: versions.length > 0
         };
-        this.cache.set(cacheKey, summary, 86400000);
+        this.cache.set(cacheKey, summary, 86400);
         return summary;
     }
     getVersionHistory(nodeType) {

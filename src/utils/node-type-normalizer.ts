@@ -25,7 +25,7 @@
  * - nodes-langchain → @n8n/n8n-nodes-langchain
  *
  * @example Database Lookup (CORRECT usage)
- * const dbType = NodeTypeNormalizer.normalizeToFullForm('n8n-nodes-base.webhook')
+ * const dbType = NodeTypeNormalizer.normalizeToShortForm('n8n-nodes-base.webhook')
  * // → 'nodes-base.webhook'
  * const node = await repository.getNode(dbType)
  *
@@ -50,30 +50,27 @@ export interface NodeTypeNormalizationResult {
 
 export class NodeTypeNormalizer {
   /**
-   * Normalize node type to canonical SHORT form (database format)
+   * Normalize node type to canonical SHORT form (database format).
    *
    * This is the PRIMARY method to use throughout the codebase.
    * It converts any node type variation to the SHORT form that the database uses.
-   *
-   * **NOTE:** Method name says "ToFullForm" for backward compatibility,
-   * but actually normalizes TO SHORT form to match database storage.
    *
    * @param type - Node type in any format
    * @returns Normalized node type in short form (database format)
    *
    * @example
-   * normalizeToFullForm('n8n-nodes-base.webhook')
+   * normalizeToShortForm('n8n-nodes-base.webhook')
    * // → 'nodes-base.webhook'
    *
    * @example
-   * normalizeToFullForm('nodes-base.webhook')
+   * normalizeToShortForm('nodes-base.webhook')
    * // → 'nodes-base.webhook' (unchanged)
    *
    * @example
-   * normalizeToFullForm('@n8n/n8n-nodes-langchain.agent')
+   * normalizeToShortForm('@n8n/n8n-nodes-langchain.agent')
    * // → 'nodes-langchain.agent'
    */
-  static normalizeToFullForm(type: string): string {
+  static normalizeToShortForm(type: string): string {
     if (!type || typeof type !== 'string') {
       return type;
     }
@@ -92,6 +89,19 @@ export class NodeTypeNormalizer {
 
     // Already in short form or community node - return unchanged
     return type;
+  }
+
+  /**
+   * @deprecated Use {@link normalizeToShortForm} instead. This method name is
+   * misleading — it actually normalizes to SHORT form (database format), not full
+   * form. It is kept here only for backward compatibility and will be removed in
+   * a future release.
+   *
+   * @param type - Node type in any format
+   * @returns Normalized node type in short form (database format)
+   */
+  static normalizeToFullForm(type: string): string {
+    return this.normalizeToShortForm(type);
   }
 
   /**
@@ -114,7 +124,7 @@ export class NodeTypeNormalizer {
    */
   static normalizeWithDetails(type: string): NodeTypeNormalizationResult {
     const original = type;
-    const normalized = this.normalizeToFullForm(type);
+    const normalized = this.normalizeToShortForm(type);
 
     return {
       original,
@@ -156,7 +166,7 @@ export class NodeTypeNormalizer {
   static normalizeBatch(types: string[]): Map<string, string> {
     const result = new Map<string, string>();
     for (const type of types) {
-      result.set(type, this.normalizeToFullForm(type));
+      result.set(type, this.normalizeToShortForm(type));
     }
     return result;
   }
@@ -192,7 +202,7 @@ export class NodeTypeNormalizer {
       ...workflow,
       nodes: workflow.nodes.map((node: any) => ({
         ...node,
-        type: this.normalizeToFullForm(node.type)
+        type: this.normalizeToShortForm(node.type)
       }))
     };
   }
