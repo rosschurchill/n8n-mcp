@@ -28,7 +28,8 @@ describe('TriggerRegistry', () => {
       expect(registeredTypes).toContain('webhook');
       expect(registeredTypes).toContain('form');
       expect(registeredTypes).toContain('chat');
-      expect(registeredTypes.length).toBe(3);
+      expect(registeredTypes).toContain('execute');
+      expect(registeredTypes.length).toBe(4);
     });
 
     it('should not register duplicate handlers on multiple init calls', async () => {
@@ -137,7 +138,7 @@ describe('TriggerRegistry', () => {
       await ensureRegistryInitialized();
 
       const types = TriggerRegistry.getRegisteredTypes();
-      expect(types.length).toBe(3);
+      expect(types.length).toBe(4);
     });
 
     it('should handle concurrent initialization calls', async () => {
@@ -150,7 +151,7 @@ describe('TriggerRegistry', () => {
       await Promise.all(promises);
 
       const types = TriggerRegistry.getRegisteredTypes();
-      expect(types.length).toBe(3);
+      expect(types.length).toBe(4);
     });
   });
 });

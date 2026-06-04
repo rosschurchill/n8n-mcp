@@ -278,7 +278,7 @@ const autofixWorkflowSchema = zod_1.z.object({
 });
 const testWorkflowSchema = zod_1.z.object({
     workflowId: zod_1.z.string(),
-    triggerType: optionalEmptyAware(zod_1.z.enum(['webhook', 'form', 'chat'])),
+    triggerType: optionalEmptyAware(zod_1.z.enum(['webhook', 'form', 'chat', 'execute'])),
     httpMethod: optionalEmptyAware(zod_1.z.enum(['GET', 'POST', 'PUT', 'DELETE'])),
     webhookPath: optionalEmptyAware(zod_1.z.string()),
     message: optionalEmptyAware(zod_1.z.string()),
@@ -1068,10 +1068,13 @@ async function handleTestWorkflow(args, context) {
                     details: {
                         workflowId: input.workflowId,
                         reason: detection.reason,
-                        hint: 'Only workflows with webhook, form, or chat triggers can be executed via the API. Add one of these trigger nodes to your workflow.',
+                        hint: 'The workflow needs at least one enabled trigger node connected to downstream nodes. Webhook/form/chat triggers are called directly; schedule, manual, and other triggers are run via a temporary webhook-shim clone (triggerType: "execute").',
                     },
                 };
             }
+        }
+        else if (triggerType === 'execute') {
+            triggerInfo = detection.trigger?.type === 'execute' ? detection.trigger : undefined;
         }
         else {
             if (detection.detected && detection.trigger?.type === triggerType) {
@@ -1086,8 +1089,8 @@ async function handleTestWorkflow(args, context) {
                         requestedTrigger: triggerType,
                         detectedTrigger: detection.trigger?.type || 'none',
                         hint: detection.detected
-                            ? `Workflow has a ${detection.trigger?.type} trigger. Either use that type or omit triggerType for auto-detection.`
-                            : 'Workflow has no externally-triggerable triggers (webhook, form, or chat).',
+                            ? `Workflow has a ${detection.trigger?.type} trigger. Either use that type, use "execute" to run it via a temporary clone, or omit triggerType for auto-detection.`
+                            : 'Workflow has no enabled, connected trigger nodes.',
                     },
                 };
             }

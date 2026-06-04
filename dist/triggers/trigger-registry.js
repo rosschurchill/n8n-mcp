@@ -74,9 +74,11 @@ async function initializeTriggerRegistry() {
     const { WebhookHandler } = await Promise.resolve().then(() => __importStar(require('./handlers/webhook-handler')));
     const { FormHandler } = await Promise.resolve().then(() => __importStar(require('./handlers/form-handler')));
     const { ChatHandler } = await Promise.resolve().then(() => __importStar(require('./handlers/chat-handler')));
+    const { ExecuteHandler } = await Promise.resolve().then(() => __importStar(require('./handlers/execute-handler')));
     TriggerRegistry.register('webhook', WebhookHandler);
     TriggerRegistry.register('form', FormHandler);
     TriggerRegistry.register('chat', ChatHandler);
+    TriggerRegistry.register('execute', ExecuteHandler);
     TriggerRegistry.markInitialized();
 }
 async function ensureRegistryInitialized() {

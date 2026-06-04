@@ -339,7 +339,7 @@ export const n8nManagementTools: ToolDefinition[] = [
   // Execution Management Tools
   {
     name: 'n8n_test_workflow',
-    description: `Test/trigger workflow execution. Auto-detects trigger type (webhook/form/chat). Supports: webhook (HTTP), form (fields), chat (message). Note: Only workflows with these trigger types can be executed externally.`,
+    description: `Test/trigger workflow execution. Auto-detects trigger type (webhook/form/chat/execute). Webhook/form/chat triggers are called directly. Schedule, manual, and other trigger types are run via "execute": a temporary clone with a webhook shim is created, fired, and deleted - the target workflow is never modified and does not need to be active. Pass data to provide the input item for execute runs.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -349,8 +349,8 @@ export const n8nManagementTools: ToolDefinition[] = [
         },
         triggerType: {
           type: 'string',
-          enum: ['webhook', 'form', 'chat'],
-          description: 'Trigger type. Auto-detected if not specified. Workflow must have a matching trigger node.'
+          enum: ['webhook', 'form', 'chat', 'execute'],
+          description: 'Trigger type. Auto-detected if not specified. "execute" runs any workflow with a connected trigger (incl. schedule/manual) via a temporary webhook-shim clone.'
         },
         // Webhook options
         httpMethod: {

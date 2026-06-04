@@ -17,6 +17,7 @@ export {
   WebhookTriggerInput,
   FormTriggerInput,
   ChatTriggerInput,
+  ExecuteTriggerInput,
   TriggerInput,
   TriggerResponse,
   TriggerHandlerCapabilities,

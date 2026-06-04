@@ -119,8 +119,61 @@ describe('Trigger Detector', () => {
       });
     });
 
-    describe('non-triggerable workflows', () => {
-      it('should return not detected for schedule trigger', () => {
+    describe('execute fallback for non-callable triggers', () => {
+      // Helper: wire the trigger to the action node so the execute
+      // fallback can simulate it
+      function connectTrigger(workflow: Workflow): Workflow {
+        workflow.connections = {
+          Trigger: { main: [[{ node: 'Action', type: 'main', index: 0 }]] },
+        } as any;
+        return workflow;
+      }
+
+      it('should detect connected schedule trigger as execute', () => {
+        const workflow = connectTrigger(
+          createWorkflowWithTrigger('n8n-nodes-base.scheduleTrigger', {
+            rule: { interval: [{ field: 'hours', value: 1 }] },
+          })
+        );
+
+        const result = detectTriggerFromWorkflow(workflow);
+
+        expect(result.detected).toBe(true);
+        expect(result.trigger?.type).toBe('execute');
+        expect(result.trigger?.node.name).toBe('Trigger');
+      });
+
+      it('should detect connected manual trigger as execute', () => {
+        const workflow = connectTrigger(
+          createWorkflowWithTrigger('n8n-nodes-base.manualTrigger', {})
+        );
+
+        const result = detectTriggerFromWorkflow(workflow);
+
+        expect(result.detected).toBe(true);
+        expect(result.trigger?.type).toBe('execute');
+      });
+
+      it('should prefer webhook over execute when both triggers exist', () => {
+        const workflow = connectTrigger(
+          createWorkflowWithTrigger('n8n-nodes-base.scheduleTrigger', {})
+        );
+        workflow.nodes.push({
+          id: 'webhook-node',
+          name: 'Webhook',
+          type: 'n8n-nodes-base.webhook',
+          typeVersion: 2,
+          position: [0, 200],
+          parameters: { path: 'hook' },
+        });
+
+        const result = detectTriggerFromWorkflow(workflow);
+
+        expect(result.detected).toBe(true);
+        expect(result.trigger?.type).toBe('webhook');
+      });
+
+      it('should return not detected for unconnected schedule trigger', () => {
         const workflow = createWorkflowWithTrigger('n8n-nodes-base.scheduleTrigger', {
           rule: { interval: [{ field: 'hours', value: 1 }] },
         });
@@ -128,21 +181,11 @@ describe('Trigger Detector', () => {
         const result = detectTriggerFromWorkflow(workflow);
 
         expect(result.detected).toBe(false);
-        // Fallback reason may be undefined for non-input triggers
+        expect(result.reason).toContain('connected to downstream');
       });
 
-      it('should return not detected for manual trigger', () => {
+      it('should return not detected for unconnected manual trigger', () => {
         const workflow = createWorkflowWithTrigger('n8n-nodes-base.manualTrigger', {});
-
-        const result = detectTriggerFromWorkflow(workflow);
-
-        expect(result.detected).toBe(false);
-      });
-
-      it('should return not detected for email trigger', () => {
-        const workflow = createWorkflowWithTrigger('n8n-nodes-base.emailReadImap', {
-          mailbox: 'INBOX',
-        });
 
         const result = detectTriggerFromWorkflow(workflow);
 

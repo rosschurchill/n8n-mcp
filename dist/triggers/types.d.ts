@@ -1,5 +1,5 @@
 import { WorkflowNode } from '../types/n8n-api';
-export type TriggerType = 'webhook' | 'form' | 'chat';
+export type TriggerType = 'webhook' | 'form' | 'chat' | 'execute';
 export interface BaseTriggerInput {
     workflowId: string;
     triggerType?: TriggerType;
@@ -22,7 +22,10 @@ export interface ChatTriggerInput extends BaseTriggerInput {
     message: string;
     sessionId?: string;
 }
-export type TriggerInput = WebhookTriggerInput | FormTriggerInput | ChatTriggerInput;
+export interface ExecuteTriggerInput extends BaseTriggerInput {
+    triggerType: 'execute';
+}
+export type TriggerInput = WebhookTriggerInput | FormTriggerInput | ChatTriggerInput | ExecuteTriggerInput;
 export interface TriggerResponse {
     success: boolean;
     triggerType: TriggerType;

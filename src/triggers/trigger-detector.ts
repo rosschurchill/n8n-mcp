@@ -83,17 +83,44 @@ export function detectTriggerFromWorkflow(workflow: Workflow): TriggerDetectionR
     }
   }
 
-  // No externally-triggerable trigger found
+  // Fallback: schedule/manual/other triggers cannot be invoked via the
+  // public API, but the 'execute' handler can run them through a temporary
+  // webhook-shim clone. Pick the first trigger with downstream connections.
+  const connectedTrigger = triggerNodes.find(
+    node => getMainDestinations(workflow, node.name).length > 0
+  );
+  if (connectedTrigger) {
+    return {
+      detected: true,
+      trigger: {
+        type: 'execute',
+        node: connectedTrigger,
+      },
+    };
+  }
+
+  // Trigger nodes exist but none are connected to anything downstream
   return {
     detected: false,
-    reason: `Workflow has trigger nodes but none support external triggering (found: ${triggerNodes.map(n => n.type).join(', ')}). Only webhook, form, and chat triggers can be triggered via the API.`,
+    reason: `Workflow has trigger nodes but none are connected to downstream nodes (found: ${triggerNodes.map(n => n.type).join(', ')}). Connect a trigger to the rest of the workflow first.`,
   };
+}
+
+/**
+ * Get a node's main-output destinations (output index 0)
+ */
+function getMainDestinations(workflow: Workflow, nodeName: string): unknown[] {
+  const main = (workflow.connections as any)?.[nodeName]?.main;
+  if (!Array.isArray(main) || !Array.isArray(main[0])) {
+    return [];
+  }
+  return main[0];
 }
 
 /**
  * Check if a node type is a trigger
  */
-function isTriggerNodeType(nodeType: string): boolean {
+export function isTriggerNodeType(nodeType: string): boolean {
   const normalized = normalizeNodeType(nodeType).toLowerCase();
   return (
     normalized.includes('trigger') ||
@@ -314,6 +341,9 @@ export function describeTrigger(trigger: DetectedTrigger): string {
 
     case 'chat':
       return `Chat trigger (${trigger.chatConfig?.responseMode || 'lastNode'} mode)`;
+
+    case 'execute':
+      return `Execute via temporary clone (simulating ${trigger.node.name} [${trigger.node.type}])`;
 
     default:
       return 'Unknown trigger';

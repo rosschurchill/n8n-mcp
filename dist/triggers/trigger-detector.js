@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectTriggerFromWorkflow = detectTriggerFromWorkflow;
+exports.isTriggerNodeType = isTriggerNodeType;
 exports.buildTriggerUrl = buildTriggerUrl;
 exports.describeTrigger = describeTrigger;
 const node_type_utils_1 = require("../utils/node-type-utils");
@@ -56,10 +57,27 @@ function detectTriggerFromWorkflow(workflow) {
             };
         }
     }
+    const connectedTrigger = triggerNodes.find(node => getMainDestinations(workflow, node.name).length > 0);
+    if (connectedTrigger) {
+        return {
+            detected: true,
+            trigger: {
+                type: 'execute',
+                node: connectedTrigger,
+            },
+        };
+    }
     return {
         detected: false,
-        reason: `Workflow has trigger nodes but none support external triggering (found: ${triggerNodes.map(n => n.type).join(', ')}). Only webhook, form, and chat triggers can be triggered via the API.`,
+        reason: `Workflow has trigger nodes but none are connected to downstream nodes (found: ${triggerNodes.map(n => n.type).join(', ')}). Connect a trigger to the rest of the workflow first.`,
     };
+}
+function getMainDestinations(workflow, nodeName) {
+    const main = workflow.connections?.[nodeName]?.main;
+    if (!Array.isArray(main) || !Array.isArray(main[0])) {
+        return [];
+    }
+    return main[0];
 }
 function isTriggerNodeType(nodeType) {
     const normalized = (0, node_type_utils_1.normalizeNodeType)(nodeType).toLowerCase();
@@ -194,6 +212,8 @@ function describeTrigger(trigger) {
             return `Form trigger (${fieldCount} fields)`;
         case 'chat':
             return `Chat trigger (${trigger.chatConfig?.responseMode || 'lastNode'} mode)`;
+        case 'execute':
+            return `Execute via temporary clone (simulating ${trigger.node.name} [${trigger.node.type}])`;
         default:
             return 'Unknown trigger';
     }

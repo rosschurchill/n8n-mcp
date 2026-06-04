@@ -99,11 +99,13 @@ export async function initializeTriggerRegistry(): Promise<void> {
   const { WebhookHandler } = await import('./handlers/webhook-handler');
   const { FormHandler } = await import('./handlers/form-handler');
   const { ChatHandler } = await import('./handlers/chat-handler');
+  const { ExecuteHandler } = await import('./handlers/execute-handler');
 
   // Register all handlers
   TriggerRegistry.register('webhook', WebhookHandler);
   TriggerRegistry.register('form', FormHandler);
   TriggerRegistry.register('chat', ChatHandler);
+  TriggerRegistry.register('execute', ExecuteHandler);
 
   TriggerRegistry.markInitialized();
 }

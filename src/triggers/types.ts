@@ -1,13 +1,12 @@
 /**
  * Trigger system types for n8n_test_workflow tool
  *
- * Supports 3 trigger categories (all input-capable):
+ * Supports 4 trigger categories (all input-capable):
  * - webhook: AI can pass HTTP body/headers/params
  * - form: AI can pass form field values
  * - chat: AI can pass message + sessionId
- *
- * Note: Direct workflow execution via API is not supported by n8n's public API.
- * Workflows must have webhook/form/chat triggers to be executable externally.
+ * - execute: runs schedule/manual/other workflows via a temporary
+ *   webhook-shim clone (n8n's public API cannot execute them directly)
  */
 
 import { Workflow, WorkflowNode } from '../types/n8n-api';
@@ -15,7 +14,7 @@ import { Workflow, WorkflowNode } from '../types/n8n-api';
 /**
  * Supported trigger types (all input-capable)
  */
-export type TriggerType = 'webhook' | 'form' | 'chat';
+export type TriggerType = 'webhook' | 'form' | 'chat' | 'execute';
 
 /**
  * Base input for all trigger handlers
@@ -56,12 +55,20 @@ export interface ChatTriggerInput extends BaseTriggerInput {
 }
 
 /**
+ * Execute-specific input (temporary webhook-shim clone)
+ */
+export interface ExecuteTriggerInput extends BaseTriggerInput {
+  triggerType: 'execute';
+}
+
+/**
  * Discriminated union of all trigger inputs
  */
 export type TriggerInput =
   | WebhookTriggerInput
   | FormTriggerInput
-  | ChatTriggerInput;
+  | ChatTriggerInput
+  | ExecuteTriggerInput;
 
 /**
  * Unified response from all trigger handlers
