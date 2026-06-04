@@ -404,7 +404,9 @@ export class ExecuteHandler extends BaseTriggerHandler<ExecuteTriggerInput> {
         wf =>
           wf.name?.startsWith(EXECUTE_CLONE_PREFIX) &&
           wf.id &&
-          (!wf.createdAt || new Date(wf.createdAt).getTime() < cutoff)
+          // Missing createdAt -> keep (could be a concurrent run's clone)
+          wf.createdAt !== undefined &&
+          new Date(wf.createdAt).getTime() < cutoff
       );
       for (const wf of stale) {
         try {
